@@ -3,6 +3,8 @@ name: build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'client/**'
     tags:
       - '*'
 
@@ -55,3 +57,86 @@ jobs:
         with:
           name: YunDongIP-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/YunDongIP-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+
+
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build Universal macOS app
+        shell: bash
+        run: |
+          mkdir -p build/amd64 build/arm64 "dist/YunDongIP.app/Contents/MacOS"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o build/amd64/YunDongIP ./cmd/yundongip
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o build/arm64/YunDongIP ./cmd/yundongip
+          lipo -create -output "dist/YunDongIP.app/Contents/MacOS/YunDongIP" build/amd64/YunDongIP build/arm64/YunDongIP
+          cp clients/macos/Info.plist "dist/YunDongIP.app/Contents/Info.plist"
+          chmod +x "dist/YunDongIP.app/Contents/MacOS/YunDongIP"
+          codesign --force --deep --sign - "dist/YunDongIP.app"
+          ditto -c -k --sequesterRsrc --keepParent "dist/YunDongIP.app" "dist/YunDongIP-0.1.0-macOS-universal.zip"
+      - name: Attest macOS app
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/YunDongIP-0.1.0-macOS-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YunDongIP-0.1.0-macOS-universal
+          path: dist/YunDongIP-0.1.0-macOS-universal.zip
+
+  android-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build embedded Android backend
+        shell: bash
+        run: |
+          mkdir -p clients/android/app/src/main/jniLibs/arm64-v8a
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o clients/android/app/src/main/jniLibs/arm64-v8a/libyundongip.so ./cmd/yundongip
+      - name: Build Android APK
+        working-directory: clients/android
+        run: gradle --no-daemon assembleDebug
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp clients/android/app/build/outputs/apk/debug/app-debug.apk dist/YunDongIP-0.1.0-android-arm64.apk
+      - name: Attest Android APK
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/YunDongIP-0.1.0-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YunDongIP-0.1.0-android-arm64
+          path: dist/YunDongIP-0.1.0-android-arm64.apk
+
+  source-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create source packages
+        shell: bash
+        run: |
+          mkdir -p dist pure
+          cp -r cmd pure/
+          cp go.mod pure/
+          cp -r clients pure/
+          (cd pure && zip -r ../dist/YunDongIP-0.1.0-pure-source-all-clients.zip .)
+          git archive --format=zip --output=dist/YunDongIP-0.1.0-protected-source-all-clients.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YunDongIP-0.1.0-source-all-clients
+          path: dist/*.zip
