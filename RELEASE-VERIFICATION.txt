@@ -1,6 +1,6 @@
-YunDongIP 0.1.0 release verification
+YunDongIP 0.1.1 release verification
 ====================================
-PASS  project version = 0.1.0
+PASS  project version = 0.1.1
 PASS  no external Go modules in go.mod
 PASS  no github.com imports in source
 PASS  default listen host = 127.0.0.1
@@ -18,3 +18,8 @@ PASS  Windows amd64 build
 PASS  Linux amd64 build
 
 Release note: end users do not need Go; Go is required only when building from source.
+
+PASS  responsive mobile / desktop viewport logic
+PASS  staged precision-board preprocessing
+PASS  paged precision-board DOM rendering
+PASS  dynamic public-egress location identity
