@@ -3,8 +3,8 @@
 YunDongIP 的官方版本通过以下可见来源信息建立版本与构建对应关系：
 
 - 官方仓库：`https://github.com/zeruiouo-blip/YunDongIP`
-- 项目版本：`0.1.0`
-- 构建标识：`YDI-PROVENANCE-0.1.0-6B8A4C2E`
+- 项目版本：`0.1.1`
+- 构建标识：`YDI-PROVENANCE-0.1.1-A73D91F4`
 - 官方构建可记录对应 Git commit
 - Release 文件使用 SHA-256 校验值
 
