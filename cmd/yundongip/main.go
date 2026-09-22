@@ -40,7 +40,7 @@ const (
 	projectName        = "YunDongIP"
 	projectVersion     = "0.1.1"
 	projectSource      = "https://github.com/zeruiouo-blip/YunDongIP"
-	projectBuildMarker = "YDI-PROVENANCE-0.1.1-A73D91F4"
+	projectBuildMarker = "YDI-PROVENANCE-0.1.1-9C4E7A12"
 )
 
 var (
@@ -723,6 +723,13 @@ func main() {
 	loadPipelineConfig()
 	loadScanRotationState()
 	go detectLocalOutboundGeo()
+	go func() {
+		localGeoRefreshTicker := time.NewTicker(15 * time.Minute)
+		defer localGeoRefreshTicker.Stop()
+		for range localGeoRefreshTicker.C {
+			detectLocalOutboundGeo()
+		}
+	}()
 
 	pipeLock.Lock()
 	pipeCfg.Enabled = false
