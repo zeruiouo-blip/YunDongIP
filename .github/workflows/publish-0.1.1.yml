@@ -184,7 +184,7 @@ jobs:
           - Android / 手机浏览器完整功能页面改为响应式布局，并加入 YDip 启动图标。
           - 桌面页面按实际浏览器宽高自动适配，低分辨率可正常滚动并访问全部功能。
           - 数字身份证首跳改为自动识别当前公网出口地区与运营商；启动识别完成后会刷新旧缓存画像，不再固定显示杭州。
-          - 扫描阶段分批预整理精测候选；Trace 回填使用索引；精测详细列表采用分批显示，降低大规模扫描结束时的浏览器卡顿。
+          - 扫描阶段每 240 个候选做一次小块预排序；扫描结束后分批合并排序结果；精测详细列表按 120 条分批显示，并对后续精测结果采用节流批量排序，降低大规模扫描结束与持续更新时的浏览器卡顿。
           - Windows / macOS / Android / Linux 全部同步 0.1.1 核心代码。
 
           ## 源码发布
@@ -192,6 +192,7 @@ jobs:
           EOF
 
           if gh release view 0.1.1 --repo zeruiouo-blip/YunDongIP >/dev/null 2>&1; then
+            gh api -X PATCH repos/zeruiouo-blip/YunDongIP/git/refs/tags/0.1.1 -f sha="${GITHUB_SHA}" -F force=true
             gh release edit 0.1.1 --title "YunDongIP 0.1.1" --notes-file /tmp/release-notes.md --repo zeruiouo-blip/YunDongIP
           else
             gh release create 0.1.1 --target "${GITHUB_SHA}" --title "YunDongIP 0.1.1" --notes-file /tmp/release-notes.md --repo zeruiouo-blip/YunDongIP
