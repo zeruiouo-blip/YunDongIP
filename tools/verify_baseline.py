@@ -9,7 +9,7 @@ html = html_path.read_text(encoding='utf-8')
 
 checks = {
     'responsive viewport': 'applyResponsiveViewport' in html,
-    'staged precision board': 'stagePrecisionBatch' in html and 'TEST_RENDER_BATCH' in html,
+    'staged precision board': 'stagePrecisionBatch' in html and 'TEST_RENDER_BATCH' in html and 'PRECISION_SORT_CHUNK' in html and 'mergePrecisionChunksAsync' in html,
     'indexed trace merge': 'scanIndexMap' in html,
     'scan x4': 'scanProbeCount     = 4' in main,
     'loss cutoff 60%': 'scanLossCutoff     = 0.60' in main,
@@ -24,7 +24,7 @@ checks = {
     'no external Go modules': 'require ' not in go_mod and 'replace ' not in go_mod,
     'no github.com imports': 'github.com/' not in '\n'.join(line for line in main.splitlines() if line.strip().startswith('\"github.com/')),
     'old scan helper names absent': not re.search(r'^func (probeCloudflareIP4|traceCloudflareColo|getRandomIPv4s|getRandomIPv6s)\(', main, re.M),
-    'project provenance marker': 'YDI-PROVENANCE-0.1.1-A73D91F4' in main and 'YDI-PROVENANCE-0.1.1-A73D91F4' in html,
+    'project provenance marker': 'YDI-PROVENANCE-0.1.1-9C4E7A12' in main and 'YDI-PROVENANCE-0.1.1-9C4E7A12' in html,
     'about endpoint': 'http.HandleFunc("/api/about", handleAbout)' in main,
     'build metadata variables': 'buildVersion' in main and 'buildCommit' in main,
     'runtime state ignored': 'yundongip-*.json' in (ROOT / '.gitignore').read_text(encoding='utf-8'),
