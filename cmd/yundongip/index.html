@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="yundongip-project" content="YunDongIP|0.1.0|YDI-PROVENANCE-0.1.0-6B8A4C2E">
+    <meta name="yundongip-project" content="YunDongIP|0.1.1|YDI-PROVENANCE-0.1.1-A73D91F4">
     <title>域动ip cloudflare优选 · 动态自愈皇位中枢</title>
     <script>
         (function() {
@@ -62,7 +62,7 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
             background-color: var(--bg-body); color: var(--text-main); margin: 0; padding: 8px 14px;
-            font-size: 14px; font-weight: 700; overflow-x: hidden; position: relative;
+            font-size: 14px; font-weight: 700; overflow-x: hidden; overflow-y: auto; position: relative; min-height: 100dvh;
         }
         #fluid-mesh-canvas, #sparkle-trail-canvas {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; transition: opacity 0.3s;
@@ -70,7 +70,7 @@
         #fluid-mesh-canvas { z-index: 0; }
         #sparkle-trail-canvas { z-index: 9999; }
         .canvas-paused { opacity: 0.05 !important; }
-        .cockpit-viewport { position: relative; z-index: 10; }
+        .cockpit-viewport { position: relative; z-index: 10; width: 100%; min-width: 0; }
         .liquid-glass-card {
             background: var(--panel-bg); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
             border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow), var(--glass-sheen);
@@ -138,9 +138,9 @@
         .hop-0{background:#059669;} .hop-1{background:#0284c7;} .hop-2{background:#7c3aed;} .hop-3{background:#d97706;} .hop-4{background:#ff2a70;}
         .cockpit-grid-stage {
             display: grid; grid-template-columns: 330px minmax(0, 1fr) 330px; gap: 10px; align-items: stretch;
-            height: calc(100vh - 365px); min-height: 520px; max-height: calc(100vh - 365px); overflow: hidden !important; margin-bottom: 4px;
+            height: var(--ydi-stage-height, clamp(360px, calc(100dvh - 350px), 760px)); min-height: 360px; max-height: none; overflow: hidden !important; margin-bottom: 4px;
         }
-        .side-column-pack { display: flex; flex-direction: column; gap: 8px; height: 100%; max-height: 100%; min-height: 0 !important; overflow: hidden !important; }
+        .side-column-pack { display: flex; flex-direction: column; gap: 8px; height: 100%; max-height: 100%; min-height: 0 !important; overflow-y: auto !important; overflow-x: hidden !important; padding-right: 2px; }
         .panel-box { border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; }
         .box-caption { font-size: 13px; font-weight: 900; color: var(--text-title); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--glass-border); padding-bottom: 4px; flex: 0 0 auto; }
         .param-badge { background: var(--param-tag); color: #fff; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: 900; margin-left: 4px; }
@@ -170,11 +170,81 @@
         .chamber-scroll-area { flex: 1; min-height: 0 !important; overflow: auto !important; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
         .log-terminal-mini { flex: 1; min-height: 0 !important; overflow: auto !important; background: rgba(9,13,22,0.65); color: #3fb950; padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.4; border: 1px solid var(--glass-border); }
         @media (max-width: 1200px) {
-            .cockpit-grid-stage { grid-template-columns: 1fr; height: auto; max-height: none; overflow: visible !important; }
+            .cockpit-grid-stage { grid-template-columns: 1fr; height: auto; min-height: 0; max-height: none; overflow: visible !important; }
             .emperor-split-deck, .split-chamber-row { grid-template-columns: 1fr; }
             .kpi-ticker-strip { grid-template-columns: 58px 1fr 1fr; }
             .kpi-actions { grid-column: 1 / -1; justify-content:flex-start; }
-            .scrollable-feed-column { height: 600px; max-height: 600px; }
+            .side-column-pack { height:auto; max-height:none; overflow:visible !important; padding-right:0; }
+            .scrollable-feed-column { height: min(680px, 72dvh); min-height: 480px; max-height: 680px; }
+        }
+        @media (max-height: 820px) and (min-width: 1201px) {
+            .cockpit-header { padding-top:6px; padding-bottom:6px; margin-bottom:6px; }
+            .kpi-ticker-strip { padding-top:6px; padding-bottom:6px; }
+            .throne-seat-card { padding-top:7px; padding-bottom:7px; }
+            .emperor-profile-banner { padding-top:6px; padding-bottom:6px; }
+            .side-column-pack { scrollbar-width:thin; }
+        }
+        @media (max-width: 768px) {
+            body { padding: 6px; font-size: 13px; overflow-y:auto !important; }
+            #fluid-mesh-canvas, #sparkle-trail-canvas { display:none !important; }
+            .liquid-glass-card { backdrop-filter:none; -webkit-backdrop-filter:none; }
+            .cockpit-header { padding:10px; align-items:flex-start; }
+            .header-brand { width:100%; align-items:center; }
+            .brand-badge { width:48px; height:48px; padding:0; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:15px; letter-spacing:-0.5px; flex:0 0 auto; }
+            .brand-title-wrap { min-width:0; }
+            .brand-title-wrap h1 { font-size:17px; display:block; }
+            .brand-title-wrap span { margin-left:0; display:block; margin-top:2px; font-size:10px; }
+            .header-controls { width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+            .header-controls .conn-badge { grid-column:1 / -1; justify-content:center; }
+            .header-controls .theme-cluster { grid-column:1 / -1; width:100%; overflow-x:auto; }
+            .header-controls .theme-cluster button { flex:1 0 auto; min-width:88px; }
+            .btn-header-action { min-height:42px; padding:8px 6px; font-size:12px; white-space:normal; }
+            .kpi-ticker-strip { grid-template-columns:52px 1fr 1fr; gap:7px; padding:8px; }
+            .kpi-circle-gauge { width:44px; height:44px; font-size:12px; }
+            .kpi-block:nth-of-type(n+4) { min-width:0; }
+            .kpi-block-val { font-size:14px; }
+            .kpi-block-sub, .kpi-block-label { font-size:9px; }
+            .kpi-actions { grid-column:1 / -1; justify-content:stretch; display:grid; grid-template-columns:1fr 1fr; }
+            .kpi-actions .btn-card-op { min-height:38px; white-space:normal; }
+            .emperor-split-deck { grid-template-columns:1fr; gap:7px; }
+            .throne-card-body { align-items:flex-start; flex-wrap:wrap; }
+            .throne-domain-name, .throne-ip-text { font-size:13px; overflow-wrap:anywhere; }
+            .throne-drawer-wrap { overflow-x:auto; }
+            .domain-strip-table { min-width:680px; font-size:11px; }
+            .profile-metrics-line { grid-template-columns:1fr 1fr; font-size:11px; }
+            .trace-hops-rack { padding:6px; gap:4px; }
+            .hop-pill { font-size:10px; padding:4px 6px; }
+            .cockpit-grid-stage { display:flex; flex-direction:column; height:auto; min-height:0; max-height:none; overflow:visible !important; gap:8px; }
+            .side-column-pack { height:auto; max-height:none; overflow:visible !important; }
+            .scrollable-feed-column { order:-1; height:auto; min-height:0; max-height:none; overflow:visible !important; }
+            .feed-switch-bar { position:sticky; top:0; z-index:20; }
+            .feed-tab-btn { font-size:10px; padding:8px 4px; min-width:0; }
+            .stream-scroll-stage, #mainStreamStage { height:62dvh !important; min-height:420px !important; max-height:62dvh !important; overflow:auto !important; padding:6px; }
+            .stream-card-row { grid-template-columns:30px minmax(0,1fr); gap:5px 7px; padding:8px; min-width:0; }
+            .stream-card-row .card-rank-tag { grid-row:1 / span 2; align-self:start; }
+            .stream-card-row .card-main-meta { min-width:0; }
+            .stream-card-row .card-perf-cluster { grid-column:2; align-items:flex-start; flex-direction:row; flex-wrap:wrap; }
+            .stream-card-row > div:last-child { grid-column:2; justify-content:flex-start !important; }
+            .card-ip-line { flex-wrap:wrap; gap:4px; }
+            .card-ip-addr { font-size:12px; white-space:normal; overflow-wrap:anywhere; word-break:break-all; }
+            .card-speed-badge { font-size:12px; }
+            .panel-box { padding:9px; }
+            .box-caption { font-size:12px; }
+            .form-unit input, .form-unit select, select, input[type="text"], input[type="number"], input[type="password"] { font-size:16px !important; min-height:42px; }
+            .port-pill, .btn-card-op { min-height:36px; }
+            .split-chamber-row { grid-template-columns:1fr; overflow:visible !important; }
+            .tri-chamber-container { height:auto; overflow:visible !important; }
+            .pool-chamber-section { min-height:260px !important; max-height:55dvh; }
+            .chamber-scroll-area { min-height:180px !important; }
+            .log-terminal-mini { min-height:220px !important; max-height:48dvh; }
+        }
+        @media (max-width: 430px) {
+            .header-controls { grid-template-columns:1fr; }
+            .header-controls .conn-badge, .header-controls .theme-cluster { grid-column:1; }
+            .kpi-ticker-strip { grid-template-columns:46px 1fr; }
+            .kpi-actions { grid-template-columns:1fr; }
+            .profile-metrics-line { grid-template-columns:1fr; }
+            .stream-scroll-stage, #mainStreamStage { height:66dvh !important; max-height:66dvh !important; }
         }
     </style>
 </head>
@@ -185,7 +255,7 @@
         <!-- 顶栏 -->
         <div class="cockpit-header liquid-glass-card">
             <div class="header-brand">
-                <span class="brand-badge">DynThrone</span>
+                <span class="brand-badge" title="YunDongIP">YDip</span>
                 <div class="brand-title-wrap">
                     <h1>域动ip cloudflare优选</h1>
                     <span id="headerModeTag">全自动自适应昼夜争霸中枢</span>
@@ -409,6 +479,9 @@
     <script>
         let ws, scanResultsCount=0, testResultsCount=0, currentFeedMode='scan', cachedPipeData=null, scanData=[], testData=[], dcList=[], inspectedIP=null, isTaskActive=false;
         let scanBuffer=[], flushTimer=null, stopCountdownTimer=null, currentProbeMode='tcp';
+        let scanIndexMap=new Map(), precisionStageMap=new Map(), precisionStageGroups=new Map();
+        let testRenderLimit=160, testRenderQueued=false;
+        const TEST_RENDER_BATCH=160, MAX_LIVE_SCAN_DOM=480;
         let rankDeferredTimer=null, rankDeferredDueAt=0, rankStageReady=false;
         const RANK_DEFER_MS=30000;
         let wsConnecting=false, wsReady=false, wsReconnectTimer=null;
@@ -550,7 +623,7 @@
                 case 'scan_complete_wait_dc': receiveDCSummary(msg.data); break;
                 case 'test_progress': log(`精测进度: ${msg.data.current}/${msg.data.total}`); break;
                 case 'test_result': addTestResult(msg.data); break;
-                case 'test_complete': testData = msg.data; renderAllTestResults(); break;
+                case 'test_complete': testData = Array.isArray(msg.data) ? msg.data : []; sortTestDataRanked(); testResultsCount = testData.length; testRenderLimit = TEST_RENDER_BATCH; scheduleTestRender(); break;
                 case 'speed_test_result': updateSpeedResult(msg.data); break;
                 case 'task_complete': resetButtonState(false); document.getElementById('progressCircle').textContent = msg.data && msg.data.completed ? '100%' : document.getElementById('progressCircle').textContent; if (flushTimer) { clearInterval(flushTimer); flushTimer = null; flushScanBufferToFeed(); } scheduleDeferredRank(msg.data && msg.data.completed ? '扫描完成' : '扫描已暂停'); break;
                 case 'error': log("错误: " + msg.data); resetButtonState(false); break;
@@ -599,50 +672,70 @@
             rankDeferredDueAt=0;
         }
 
+        function resetPrecisionStage() {
+            precisionStageMap = new Map();
+            precisionStageGroups = new Map();
+            testRenderLimit = TEST_RENDER_BATCH;
+            const feed = document.getElementById('feedTestCount');
+            if (feed) feed.textContent = '0';
+        }
+
+        function stagePrecisionBatch(batch) {
+            if (!Array.isArray(batch) || batch.length === 0) return;
+            for (const item of batch) {
+                const dc = String(item?.DataCenter || '').trim();
+                if (!dc || dc === 'Trace中') continue;
+                const key = `${item.IP}|${item.Port}`;
+                const existed = precisionStageMap.has(key);
+                precisionStageMap.set(key, {...item});
+                if (!existed) {
+                    let g = precisionStageGroups.get(dc);
+                    if (!g) {
+                        g = {
+                            DataCenter: dc,
+                            Country: item.Country || 'Global',
+                            Region: item.Region || dc,
+                            City: item.City || dc,
+                            IPCount: 0,
+                            MinLossRate: 1,
+                            _latencySum: 0,
+                            _latencyCount: 0
+                        };
+                        precisionStageGroups.set(dc, g);
+                    }
+                    g.IPCount++;
+                    const loss = scanLossRate(item);
+                    if (loss < g.MinLossRate) g.MinLossRate = loss;
+                    const lat = scanLatencyMs(item);
+                    if (Number.isFinite(lat) && lat < Number.MAX_SAFE_INTEGER) {
+                        g._latencySum += lat;
+                        g._latencyCount++;
+                    }
+                }
+            }
+            const feed = document.getElementById('feedTestCount');
+            if (feed && !rankStageReady) feed.textContent = precisionStageMap.size;
+        }
+
         function buildPrecisionBoardFromScan() {
-            const classified = scanData.filter(x => {
-                const dc = String(x?.DataCenter || '').trim();
-                return dc && dc !== 'Trace中';
-            });
-            testData = classified.map(x => ({...x}));
+            if (precisionStageMap.size === 0 && scanData.length) {
+                stagePrecisionBatch(scanData);
+            }
+            testData = Array.from(precisionStageMap.values());
             sortTestDataRanked();
             testResultsCount = testData.length;
             selectedPrecisionDC = '';
+            testRenderLimit = TEST_RENDER_BATCH;
 
-            const groups = new Map();
-            for (const res of testData) {
-                const dc = String(res?.DataCenter || '').trim();
-                if (!dc) continue;
-                let g = groups.get(dc);
-                if (!g) {
-                    g = {
-                        DataCenter: dc,
-                        Country: res.Country || 'Global',
-                        Region: res.Region || dc,
-                        City: res.City || dc,
-                        IPCount: 0,
-                        MinLossRate: Number.isFinite(Number(res.LossRate)) ? Number(res.LossRate) : 1,
-                        AvgLatency: 0,
-                        _latencySum: 0,
-                        _latencyCount: 0
-                    };
-                    groups.set(dc, g);
-                }
-                g.IPCount++;
-                const loss = scanLossRate(res);
-                if (loss < g.MinLossRate) g.MinLossRate = loss;
-                const lat = scanLatencyMs(res);
-                if (Number.isFinite(lat) && lat < Number.MAX_SAFE_INTEGER) {
-                    g._latencySum += lat;
-                    g._latencyCount++;
-                }
-            }
-            dcList = Array.from(groups.values()).map(g => {
-                g.AvgLatency = g._latencyCount ? Math.round(g._latencySum / g._latencyCount) : '--';
-                delete g._latencySum;
-                delete g._latencyCount;
-                return g;
-            }).sort((a,b) => String(a.DataCenter).localeCompare(String(b.DataCenter)));
+            dcList = Array.from(precisionStageGroups.values()).map(g => ({
+                DataCenter: g.DataCenter,
+                Country: g.Country,
+                Region: g.Region,
+                City: g.City,
+                IPCount: g.IPCount,
+                MinLossRate: g.MinLossRate,
+                AvgLatency: g._latencyCount ? Math.round(g._latencySum / g._latencyCount) : '--'
+            })).sort((a,b) => String(a.DataCenter).localeCompare(String(b.DataCenter)));
 
             document.getElementById('feedTestCount').textContent = testResultsCount;
             return { candidates: testResultsCount, colos: dcList.length };
@@ -672,9 +765,10 @@
                 stage.innerHTML = '<div style="padding:30px; text-align:center; color:var(--text-muted);">⏳ 正在进行高速探测，等待第一批 TCP×4 + CF Trace 结果...</div>';
                 return;
             }
-            stage.innerHTML = '<div id="scanLiveHeader" style="padding:6px 10px; margin-bottom:5px; border-bottom:1px solid var(--glass-border); color:var(--text-muted); font-size:11px;">📡 探测流实时追加：按扫描完成先后顺序显示，扫描期间<strong>不排序、不重排、不生成精测榜</strong>。</div>';
-            const chunk = scanData.map((res, i) => getLiveScanCardHtml(res, i)).join('');
-            stage.insertAdjacentHTML('beforeend', chunk);
+            const start = Math.max(0, scanData.length - MAX_LIVE_SCAN_DOM);
+            const visible = scanData.slice(start);
+            stage.innerHTML = `<div id="scanLiveHeader" style="padding:6px 10px; margin-bottom:5px; border-bottom:1px solid var(--glass-border); color:var(--text-muted); font-size:11px;">📡 探测流实时追加：完整数据后台保留；为防止浏览器卡顿，页面只保留最近 ${MAX_LIVE_SCAN_DOM} 条可视卡片。扫描期间精测候选已在后台分批预整理。</div>`;
+            stage.insertAdjacentHTML('beforeend', visible.map((res, i) => getLiveScanCardHtml(res, start + i)).join(''));
             stage.scrollTop = stage.scrollHeight;
         }
 
@@ -682,11 +776,11 @@
             cancelDeferredRank();
             rankStageReady=false;
             rankDeferredDueAt=Date.now()+RANK_DEFER_MS;
-            log(`🧠 ${reason}：探测流继续保留原始顺序；30秒后才统一分类、加载、排序精测榜。`);
+            log(`🧠 ${reason}：扫描期间已分批预整理 ${precisionStageMap.size} 个精测候选；30秒后只做最终排序与轻量加载。`);
             rankDeferredTimer=setTimeout(() => {
                 rankDeferredTimer=null;
                 rankDeferredDueAt=0;
-                log('🧩 开始整理精测候选：汇总扫描结果与 CF Trace 地区分类...');
+                log('🧩 开始完成精测候选最终排序；地区分类已在扫描阶段分批预载...');
                 const summary = buildPrecisionBoardFromScan();
                 rankStageReady=true;
                 if (currentFeedMode === 'test') {
@@ -715,6 +809,8 @@
 
             resetButtonState(true);
             scanData = []; scanBuffer = []; testData = []; dcList = []; scanResultsCount = 0; testResultsCount = 0;
+            scanIndexMap = new Map();
+            resetPrecisionStage();
             document.getElementById('mainStreamStage').innerHTML = '';
             switchStageFeed('scan');
             if (flushTimer) clearInterval(flushTimer);
@@ -772,6 +868,8 @@
         function queueScanResult(res) {
             if (!res || !res.IP) return;
             scanResultsCount++;
+            const key = `${res.IP}|${res.Port}`;
+            scanIndexMap.set(key, scanData.length);
             scanData.push(res);
             scanBuffer.push(res);
             const feed = document.getElementById('feedScanCount');
@@ -782,10 +880,9 @@
 
         function mergeScanTraceBatch(batch) {
             if (!Array.isArray(batch) || batch.length === 0) return;
-            const map = new Map();
-            scanData.forEach((x, i) => map.set(`${x.IP}|${x.Port}`, i));
+            stagePrecisionBatch(batch);
             batch.forEach(item => {
-                const idx = map.get(`${item.IP}|${item.Port}`);
+                const idx = scanIndexMap.get(`${item.IP}|${item.Port}`);
                 if (idx === undefined) return;
                 scanData[idx] = {...scanData[idx], ...item};
                 const key = scanDomKey(item);
@@ -799,22 +896,23 @@
         }
 
         function flushScanBufferToFeed() {
+            if (        function flushScanBufferToFeed() {
             if (scanBuffer.length === 0) return;
             const buffered = scanBuffer.slice();
             scanBuffer = [];
             document.getElementById('feedScanCount').textContent = scanResultsCount;
             document.getElementById('kpi_scan_count').textContent = scanResultsCount;
-            if (currentFeedMode !== 'scan') {
-                scanBuffer = buffered.concat(scanBuffer);
-                return;
-            }
+            if (currentFeedMode !== 'scan') return;
             const stage = document.getElementById('mainStreamStage');
             if (!stage) return;
             if (!document.getElementById('scanLiveHeader')) {
-                stage.innerHTML = '<div id="scanLiveHeader" style="padding:6px 10px; margin-bottom:5px; border-bottom:1px solid var(--glass-border); color:var(--text-muted); font-size:11px;">📡 探测流实时追加：按扫描完成先后顺序显示，扫描期间<strong>不排序、不重排、不生成精测榜</strong>。</div>';
+                stage.innerHTML = `<div id="scanLiveHeader" style="padding:6px 10px; margin-bottom:5px; border-bottom:1px solid var(--glass-border); color:var(--text-muted); font-size:11px;">📡 探测流实时追加：完整数据后台保留；页面只保留最近 ${MAX_LIVE_SCAN_DOM} 条可视卡片，降低长时间扫描 DOM 压力。</div>`;
             }
             const baseIndex = scanResultsCount - buffered.length;
             stage.insertAdjacentHTML('beforeend', buffered.map((res, i) => getLiveScanCardHtml(res, baseIndex + i)).join(''));
+            const rows = stage.querySelectorAll('[data-scan-key]');
+            const excess = rows.length - MAX_LIVE_SCAN_DOM;
+            for (let i = 0; i < excess; i++) rows[i].remove();
             stage.scrollTop = stage.scrollHeight;
         }
 
@@ -859,6 +957,7 @@
         function selectDC(dc) {
             if (checkScanningLock()) return;
             selectedPrecisionDC = dc || '';
+            testRenderLimit = TEST_RENDER_BATCH;
             renderTestStageContent();
         }
 
@@ -883,25 +982,35 @@
             });
         }
 
+        function scheduleTestRender() {
+            if (testRenderQueued) return;
+            testRenderQueued = true;
+            requestAnimationFrame(() => {
+                testRenderQueued = false;
+                renderAllTestResults();
+            });
+        }
+
         function addTestResult(res) {
             const idx = testData.findIndex(x => x.IP === res.IP && x.Port === res.Port);
             if (idx >= 0) testData[idx] = res; else testData.push(res);
             testResultsCount = testData.length;
             sortTestDataRanked();
             document.getElementById('feedTestCount').textContent = testResultsCount;
+            scheduleTestRender();
+        }
+
+        function loadMoreTestResults() {
+            testRenderLimit += TEST_RENDER_BATCH;
             renderAllTestResults();
         }
 
         function renderAllTestResults() {
             const c = document.getElementById('testItemsContainer');
             if (!c) return;
-            const rows = selectedPrecisionDC ? testData.filter(x => x.DataCenter === selectedPrecisionDC) : testData.slice();
-            rows.sort((a, b) => {
-                const lossA = scanLossRate(a), lossB = scanLossRate(b);
-                if (lossA !== lossB) return lossA - lossB;
-                return scanLatencyMs(a) - scanLatencyMs(b);
-            });
-            c.innerHTML = rows.map((res, i) => {
+            const rows = selectedPrecisionDC ? testData.filter(x => x.DataCenter === selectedPrecisionDC) : testData;
+            const visible = rows.slice(0, testRenderLimit);
+            c.innerHTML = visible.map((res, i) => {
                 const loss = (scanLossRate(res) * 100).toFixed(0);
                 const minMs = (Number(res.MinLatency || 0) / 1000000).toFixed(0);
                 const avgMs = scanLatencyMs(res).toFixed(0);
@@ -909,6 +1018,9 @@
                 const speedId = res.IP.replace(/[:.]/g,'_');
                 return `<div class="stream-card-row"><div class="card-rank-tag">#${i+1}</div><div class="card-main-meta"><div class="card-ip-line"><span class="card-ip-addr" onclick="copyToClipboard('${res.IP}', this)">${res.IP}</span><span class="card-colo-pill">${res.DataCenter}</span><span style="font-size:9px; color:var(--success);">本地适配候选</span></div><div style="font-size:10px; color:var(--text-muted);">${res.City} / ${res.Region} · 4次握手 + CF Trace · 丢包 ${loss}% · 最低 ${minMs}ms · 平均 ${avgMs}ms · 最高 ${maxMs}ms</div></div><div class="card-perf-cluster"><div class="card-speed-badge" id="speed-badge-${speedId}">${res.Speed||'未测速'}</div><div class="card-ping-badge">${loss}% 丢包</div></div><div style="display:flex; gap:3px; flex-wrap:wrap; justify-content:flex-end;"><button class="btn-card-op" onclick="runSpeedTest('${res.IP}')">测速</button><button class="btn-card-op" onclick="inspectNode('${res.IP}')">画像</button></div></div>`;
             }).join('');
+            if (visible.length < rows.length) {
+                c.insertAdjacentHTML('beforeend', `<div style="padding:10px;text-align:center;border:1px dashed var(--glass-border);border-radius:7px;background:var(--panel-sub);"><div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">已显示 ${visible.length} / ${rows.length}，其余候选仍完整保存在内存榜单中。</div><button class="btn-card-op" onclick="loadMoreTestResults()">继续加载 ${Math.min(TEST_RENDER_BATCH, rows.length-visible.length)} 条</button></div>`);
+            }
         }
 
         function runSpeedTest(ip) {
@@ -948,7 +1060,7 @@
             } else if (mode === 'test') {
                 if (!rankStageReady) {
                     const sec = rankDeferredDueAt > 0 ? Math.max(1, Math.ceil((rankDeferredDueAt - Date.now()) / 1000)) : 30;
-                    s.innerHTML = `<div style="padding:30px; text-align:center; color:var(--text-muted);"><div style="font-size:28px; margin-bottom:8px;">⏳</div><strong>精测榜暂不加载</strong><div style="font-size:11px; margin-top:6px;">扫描期间不分类、不重排；${isTaskActive ? '扫描完成或人工暂停后' : '当前已停止扫描，'}再等待约 ${sec} 秒，统一执行分类、加载和排序。</div></div>`;
+                    s.innerHTML = `<div style="padding:30px; text-align:center; color:var(--text-muted);"><div style="font-size:28px; margin-bottom:8px;">⏳</div><strong>精测榜正在后台预整理</strong><div style="font-size:11px; margin-top:6px;">扫描阶段已分批预载 ${precisionStageMap.size} 个已完成 CF Trace 的候选，不做整榜 DOM 重绘；${isTaskActive ? '扫描完成或人工暂停后' : '当前已停止扫描，'}约 ${sec} 秒后只完成最终排序并按批显示。</div></div>`;
                 } else {
                     renderTestStageContent();
                 }
@@ -1376,7 +1488,28 @@
         }
         renderMesh();
 
+        function applyResponsiveViewport() {
+            const root = document.documentElement;
+            const w = window.innerWidth || document.documentElement.clientWidth || 1280;
+            const h = window.innerHeight || document.documentElement.clientHeight || 800;
+            if (w > 1200) {
+                const stageHeight = Math.max(360, Math.min(760, h - 350));
+                root.style.setProperty('--ydi-stage-height', stageHeight + 'px');
+            } else {
+                root.style.removeProperty('--ydi-stage-height');
+            }
+            root.dataset.ydiViewport = w <= 768 ? 'mobile' : (h <= 820 ? 'compact-desktop' : 'desktop');
+        }
+
+        let viewportResizeTimer=null;
+        window.addEventListener('resize', () => {
+            if (viewportResizeTimer) clearTimeout(viewportResizeTimer);
+            viewportResizeTimer=setTimeout(applyResponsiveViewport, 120);
+        }, {passive:true});
+        window.addEventListener('orientationchange', () => setTimeout(applyResponsiveViewport, 180), {passive:true});
+
         window.addEventListener('DOMContentLoaded', () => {
+            applyResponsiveViewport();
             connect(); syncPortBadgeStyles(); refreshPipe(); setInterval(refreshPipe, 2000);
         });
     </script>
