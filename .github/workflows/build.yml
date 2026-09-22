@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -trimpath -ldflags='-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}' -o "dist/YunDongIP-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" ./cmd/yundongip
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o "dist/YunDongIP-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" ./cmd/yundongip
       - name: Attest build
         uses: actions/attest@v4
         with:
