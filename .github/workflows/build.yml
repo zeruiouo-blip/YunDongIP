@@ -69,12 +69,13 @@ jobs:
       - name: Build Universal macOS app
         shell: bash
         run: |
-          mkdir -p build/amd64 build/arm64 "dist/YunDongIP.app/Contents/MacOS"
+          mkdir -p build/amd64 build/arm64 "dist/YunDongIP.app/Contents/MacOS" "dist/YunDongIP.app/Contents/Resources"
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o build/amd64/YunDongIP ./cmd/yundongip
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.buildVersion=0.1.0 -X main.buildCommit=${GITHUB_SHA}" -o build/arm64/YunDongIP ./cmd/yundongip
-          lipo -create -output "dist/YunDongIP.app/Contents/MacOS/YunDongIP" build/amd64/YunDongIP build/arm64/YunDongIP
+          lipo -create -output "dist/YunDongIP.app/Contents/Resources/YunDongIP-core" build/amd64/YunDongIP build/arm64/YunDongIP
+          cp clients/macos/launcher.sh "dist/YunDongIP.app/Contents/MacOS/YunDongIP"
           cp clients/macos/Info.plist "dist/YunDongIP.app/Contents/Info.plist"
-          chmod +x "dist/YunDongIP.app/Contents/MacOS/YunDongIP"
+          chmod +x "dist/YunDongIP.app/Contents/MacOS/YunDongIP" "dist/YunDongIP.app/Contents/Resources/YunDongIP-core"
           codesign --force --deep --sign - "dist/YunDongIP.app"
           ditto -c -k --sequesterRsrc --keepParent "dist/YunDongIP.app" "dist/YunDongIP-0.1.0-macOS-universal.zip"
       - name: Attest macOS app
