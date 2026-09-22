@@ -1298,7 +1298,17 @@
                 document.getElementById('p_colo').textContent = `${prof.colo||'CF'} 机房`;
                 document.getElementById('p_isp').textContent = prof.isp||'骨干网';
                 document.getElementById('p_born').textContent = prof.born_time ? new Date(prof.born_time).toLocaleTimeString() : '--';
-                renderColoredHops(prof.backbone_path);
+                let routePath = prof.backbone_path || '';
+                const liveCity = String(cachedPipeData.local_city || '').trim();
+                const liveISP = String(cachedPipeData.local_isp || '').trim();
+                if (liveCity && routePath.includes('➔')) {
+                    const parts = routePath.split('➔').map(x => x.trim()).filter(Boolean);
+                    if (parts.length) {
+                        parts[0] = `${liveCity}${liveISP ? ' (' + liveISP + ')' : ''}`;
+                        routePath = parts.join(' ➔ ');
+                    }
+                }
+                renderColoredHops(routePath);
             }
         }
 
