@@ -38,9 +38,9 @@ var staticFiles embed.FS
 
 const (
 	projectName        = "YunDongIP"
-	projectVersion     = "0.1.0"
+	projectVersion     = "0.1.1"
 	projectSource      = "https://github.com/zeruiouo-blip/YunDongIP"
-	projectBuildMarker = "YDI-PROVENANCE-0.1.0-6B8A4C2E"
+	projectBuildMarker = "YDI-PROVENANCE-0.1.1-A73D91F4"
 )
 
 var (
@@ -346,8 +346,10 @@ var (
 	logLock      sync.Mutex
 	activeWSConn *wsConn
 
-	localDetectedCity = "本地网络"
-	localDetectedISP  = "自动探测中"
+	localDetectedCity   = "本地公网出口"
+	localDetectedRegion = ""
+	localDetectedISP    = "自动探测中"
+	localGeoReady       bool
 
 	lowSpeedBlacklist = make(map[string]time.Time)
 	blacklistLock     sync.RWMutex
@@ -415,24 +417,104 @@ func getCurrentPeriodTag() string {
 }
 
 func detectLocalOutboundGeo() {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://ip-api.com/json/?lang=zh-CN")
-	if err == nil {
-		defer resp.Body.Close()
+	client := &http.Client{Timeout: 4 * time.Second}
+
+	type geoResult struct {
+		City   string
+		Region string
+		ISP    string
+	}
+	var result geoResult
+
+	// 首选 HTTPS 公网出口定位，避免旧版固定地区和明文接口造成误判。
+	req, _ := http.NewRequest("GET", "https://ipwho.is/", nil)
+	req.Header.Set("User-Agent", projectName+"/"+projectVersion)
+	if resp, err := client.Do(req); err == nil {
 		var res struct {
-			City string `json:"city"`
-			Isp  string `json:"isp"`
+			Success bool   `json:"success"`
+			City    string `json:"city"`
+			Region  string `json:"region"`
+			Connection struct {
+				ISP string `json:"isp"`
+			} `json:"connection"`
 		}
-		if json.NewDecoder(resp.Body).Decode(&res) == nil && res.City != "" {
-			localDetectedCity = res.City
-			if res.Isp != "" {
-				localDetectedISP = res.Isp
-			}
-			return
+		if resp.Body != nil {
+			_ = json.NewDecoder(resp.Body).Decode(&res)
+			resp.Body.Close()
+		}
+		if res.Success && (strings.TrimSpace(res.City) != "" || strings.TrimSpace(res.Region) != "") {
+			result.City = strings.TrimSpace(res.City)
+			result.Region = strings.TrimSpace(res.Region)
+			result.ISP = strings.TrimSpace(res.Connection.ISP)
 		}
 	}
-	localDetectedCity = "本地网络"
-	localDetectedISP = "未知运营商"
+
+	// 主接口不可用时使用第二个 HTTPS 来源兜底。
+	if result.City == "" && result.Region == "" {
+		req2, _ := http.NewRequest("GET", "https://ipapi.co/json/", nil)
+		req2.Header.Set("User-Agent", projectName+"/"+projectVersion)
+		if resp, err := client.Do(req2); err == nil {
+			var res struct {
+				City   string `json:"city"`
+				Region string `json:"region"`
+				Org    string `json:"org"`
+			}
+			if resp.Body != nil {
+				_ = json.NewDecoder(resp.Body).Decode(&res)
+				resp.Body.Close()
+			}
+			result.City = strings.TrimSpace(res.City)
+			result.Region = strings.TrimSpace(res.Region)
+			result.ISP = strings.TrimSpace(res.Org)
+		}
+	}
+
+	label := "本地公网出口"
+	if result.Region != "" && result.City != "" && !strings.EqualFold(result.Region, result.City) {
+		label = result.Region + " · " + result.City
+	} else if result.City != "" {
+		label = result.City
+	} else if result.Region != "" {
+		label = result.Region
+	}
+	isp := result.ISP
+	if isp == "" {
+		isp = "未知运营商"
+	}
+
+	pipeLock.Lock()
+	localDetectedCity = label
+	localDetectedRegion = result.Region
+	localDetectedISP = isp
+	localGeoReady = result.City != "" || result.Region != ""
+	refreshProfileRoutesLocked()
+	saveCacheFiles()
+	pipeLock.Unlock()
+
+	if localGeoReady {
+		addLog("📍 [公网出口识别] 已自动识别地区：%s；运营商：%s。数字身份证首跳已同步刷新。", localDetectedCity, localDetectedISP)
+	} else {
+		addLog("⚠️ [公网出口识别] 暂未取得地区信息，数字身份证将显示“本地公网出口”，不会使用固定城市。")
+	}
+}
+
+func refreshProfileRoutesLocked() {
+	for _, p := range profileStore {
+		if p == nil {
+			continue
+		}
+		isp, path := buildDetailedRoutePath(p.IP, p.Colo, p.LatencyMS, p.Version == IPv6)
+		p.ISP = isp
+		p.BackbonePath = path
+	}
+	for _, stat := range domainStatus {
+		if stat == nil || stat.CurrentIP == "" {
+			continue
+		}
+		if p := profileStore[stat.CurrentIP]; p != nil {
+			stat.Profile = p
+		}
+	}
 }
 
 func addLog(format string, a ...interface{}) {
@@ -483,76 +565,59 @@ func isColoMatched(nodeColo, allowedFilter string) bool {
 }
 
 func buildDetailedRoutePath(ip, colo string, latency int, isV6 bool) (string, string) {
-	var hops []string
-	isp := "中国移动直连"
+	localLabel := strings.TrimSpace(localDetectedCity)
+	if localLabel == "" {
+		localLabel = "本地公网出口"
+	}
+	isp := strings.TrimSpace(localDetectedISP)
+	if isp == "" || isp == "自动探测中" {
+		isp = "未知运营商"
+	}
+	proto := "IPv4"
+	if isV6 {
+		proto = "IPv6"
+	}
 
-	hops = append(hops, fmt.Sprintf("%s (%s端)", localDetectedCity, localDetectedISP))
-
-	if strings.Contains(ip, ".15.") || strings.Contains(ip, ".67.") {
-		isp = "中国电信163"
-		hops = append(hops, fmt.Sprintf("%s省级电信骨干网 (AS4134)", localDetectedCity))
-		if latency > 220 && colo == "HKG" {
-			hops = append(hops, "上海出海关口局 (202.97.*.*)")
-			hops = append(hops, "跨太平洋海底光缆 (绕道美西节点)")
-			hops = append(hops, "二次穿透国际链路回程亚太")
-		} else {
-			hops = append(hops, "广州出海关口局 (202.97.*.*)")
-			hops = append(hops, "亚太直达海底光缆通道 (TPE/NCP)")
-		}
-	} else if strings.Contains(ip, ".19.") || strings.Contains(ip, ".21.") {
-		isp = "中国联通169"
-		hops = append(hops, fmt.Sprintf("%s联通 169 核心汇聚网 (AS4837)", localDetectedCity))
-		if colo == "NRT" || colo == "KIX" {
-			hops = append(hops, "北京/青岛出海关口局 (219.158.*.*)")
-			hops = append(hops, "APG 中日极速直达海缆")
-		} else {
-			hops = append(hops, "广州出海关口局 (219.158.*.*)")
-			hops = append(hops, "亚欧陆海直通骨干通道")
-		}
+	hops := []string{
+		fmt.Sprintf("%s (%s)", localLabel, isp),
+		fmt.Sprintf("本地运营商公网出口 (%s)", proto),
+	}
+	if latency > 0 {
+		hops = append(hops, fmt.Sprintf("公网转接路径 · 端到端约 %d ms", latency))
 	} else {
-		hops = append(hops, fmt.Sprintf("%s移动核心汇聚骨干网 (AS9808)", localDetectedCity))
-		if colo == "HKG" || colo == "SIN" || colo == "BKK" {
-			hops = append(hops, "广州 CMNET 国际关口局 (221.183.*.*)")
-			hops = append(hops, "CMI 跨境低延时直达陆海缆通道")
-		} else {
-			hops = append(hops, "上海 CMNET 国际关口局 (221.183.*.*)")
-			hops = append(hops, "FASTER / NCP 跨洋直达高速光缆")
-		}
+		hops = append(hops, "公网转接路径")
 	}
 
-	switch colo {
+	cleanColo := strings.TrimSpace(strings.ToUpper(colo))
+	if cleanColo == "" || cleanColo == "TRACE中" {
+		cleanColo = "CF"
+	}
+	switch cleanColo {
 	case "HKG":
-		hops = append(hops, "香港 HKIX 核心互联网交换中心")
-		hops = append(hops, "Cloudflare 香港核心集群 (HKG)")
+		hops = append(hops, "Cloudflare 香港 Anycast 边缘 (HKG)")
 	case "SJC":
-		hops = append(hops, "美国圣何塞 Equinix 交换枢纽")
-		hops = append(hops, "Cloudflare 美西圣何塞集群 (SJC)")
+		hops = append(hops, "Cloudflare 圣何塞 Anycast 边缘 (SJC)")
 	case "LAX":
-		hops = append(hops, "美国洛杉矶 One Wilshire 电信枢纽")
-		hops = append(hops, "Cloudflare 洛杉矶数据中心 (LAX)")
+		hops = append(hops, "Cloudflare 洛杉矶 Anycast 边缘 (LAX)")
 	case "NRT":
-		hops = append(hops, "日本东京 JPNAP / BBIX 交换中心")
-		hops = append(hops, "Cloudflare 东京数据中心 (NRT)")
+		hops = append(hops, "Cloudflare 东京 Anycast 边缘 (NRT)")
+	case "KIX":
+		hops = append(hops, "Cloudflare 大阪 Anycast 边缘 (KIX)")
 	case "FRA":
-		hops = append(hops, "德国法兰克福 DE-CIX 交换中心")
-		hops = append(hops, "Cloudflare 法兰克福数据中心 (FRA)")
+		hops = append(hops, "Cloudflare 法兰克福 Anycast 边缘 (FRA)")
+	case "CF":
+		hops = append(hops, "Cloudflare Anycast 边缘")
 	default:
-		hops = append(hops, "海外骨干交换网关 (Transit POP)")
-		hops = append(hops, fmt.Sprintf("Cloudflare %s 边缘集群", colo))
+		hops = append(hops, fmt.Sprintf("Cloudflare %s Anycast 边缘", cleanColo))
 	}
 
-	fullPath := strings.Join(hops, " ➔ ")
-	return isp, fullPath
+	return isp, strings.Join(hops, " ➔ ")
 }
 
-func buildNodeProfile(ip string, ver IPVersion, speedMbps float64, delay int, port int) *NodeProfile {
-	colo := "HKG"
-	if strings.Contains(ip, ".15.") || strings.Contains(ip, ".67.") {
-		colo = "SJC"
-	} else if strings.Contains(ip, ".19.") || strings.Contains(ip, ".21.") {
-		colo = "NRT"
-	} else if ver == IPv6 {
-		colo = "FRA"
+func buildNodeProfile(ip string, ver IPVersion, speedMbps float64, delay int, port int, coloHint string) *NodeProfile {
+	colo := strings.TrimSpace(strings.ToUpper(coloHint))
+	if colo == "" || colo == "TRACE中" {
+		colo = "CF"
 	}
 
 	isp, fullPath := buildDetailedRoutePath(ip, colo, delay, ver == IPv6)
@@ -653,11 +718,11 @@ func main() {
 	flag.StringVar(&speedTestURL, "url", "speed.cloudflare.com/__down?bytes=25000000", "测速下载地址")
 	flag.Parse()
 
-	go detectLocalOutboundGeo()
 	initLocations()
 	loadCleanCacheFiles()
 	loadPipelineConfig()
 	loadScanRotationState()
+	go detectLocalOutboundGeo()
 
 	pipeLock.Lock()
 	pipeCfg.Enabled = false
@@ -1213,7 +1278,7 @@ func handlePipeGet(w http.ResponseWriter, r *http.Request) {
 				if v.Type == "AAAA" || isIPv6(v.CurrentIP) {
 					ver = IPv6
 				}
-				profileStore[v.CurrentIP] = buildNodeProfile(v.CurrentIP, ver, v.CurrentSpeed, 50, 443)
+				profileStore[v.CurrentIP] = buildNodeProfile(v.CurrentIP, ver, v.CurrentSpeed, 50, 443, "")
 			}
 			v.Profile = profileStore[v.CurrentIP]
 		}
@@ -1264,7 +1329,9 @@ func handlePipeGet(w http.ResponseWriter, r *http.Request) {
 		"profiles":        profileStore,
 		"logs":            logSnapshot,
 		"local_city":      localDetectedCity,
+		"local_region":    localDetectedRegion,
 		"local_isp":       localDetectedISP,
+		"local_geo_ready": localGeoReady,
 		"blacklist_count": bCount,
 	})
 }
@@ -1686,7 +1753,7 @@ func handlePinIPToSubdomain(w http.ResponseWriter, r *http.Request) {
 		if isIPv6(ip) {
 			ver = IPv6
 		}
-		profileStore[ip] = buildNodeProfile(ip, ver, 32.0, 50, 443)
+		profileStore[ip] = buildNodeProfile(ip, ver, 32.0, 50, 443, "")
 	}
 	prof := profileStore[ip]
 	prof.CurrentRole = "emperor"
@@ -2411,7 +2478,7 @@ func executeR2Candidate(cand *CandidateIP) {
 	if cand.Version == IPv6 || isIPv6(cand.IP) {
 		cand.Version = IPv6
 		if r4CountV6 < 5 {
-			prof := buildNodeProfile(cand.IP, IPv6, cand.Speed, cand.Delay, cand.Port)
+			prof := buildNodeProfile(cand.IP, IPv6, cand.Speed, cand.Delay, cand.Port, cand.Colo)
 			cand.Profile = prof
 			profileStore[cand.IP] = prof
 			pool4V6Ring.Insert(cand)
@@ -2423,7 +2490,7 @@ func executeR2Candidate(cand *CandidateIP) {
 	} else {
 		cand.Version = IPv4
 		if r4CountV4 < 5 {
-			prof := buildNodeProfile(cand.IP, IPv4, cand.Speed, cand.Delay, cand.Port)
+			prof := buildNodeProfile(cand.IP, IPv4, cand.Speed, cand.Delay, cand.Port, cand.Colo)
 			cand.Profile = prof
 			profileStore[cand.IP] = prof
 			pool4V4Ring.Insert(cand)
@@ -2842,7 +2909,7 @@ func runDuelForTrack(ver IPVersion, pool *[]*CandidateIP, ring *RingBuffer100) {
 		if idx < 3 && cand.Speed >= baseSpeed {
 			cand.ChallengeCount = 0
 			cand.Status = fmt.Sprintf("👑 晋升皇储 (%.2f MB/s)", cand.Speed/8.0)
-			prof := buildNodeProfile(cand.IP, ver, cand.Speed, cand.Delay, cand.Port)
+			prof := buildNodeProfile(cand.IP, ver, cand.Speed, cand.Delay, cand.Port, cand.Colo)
 			cand.Profile = prof
 			profileStore[cand.IP] = prof
 

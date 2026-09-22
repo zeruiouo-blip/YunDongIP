@@ -8,6 +8,8 @@
     <application
         android:theme="@style/AppTheme"
         android:label="YunDongIP"
+        android:icon="@drawable/ic_yundongip"
+        android:roundIcon="@drawable/ic_yundongip"
         android:usesCleartextTraffic="true"
         android:extractNativeLibs="true">
 
