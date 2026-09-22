@@ -3,6 +3,8 @@ name: build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - '**'
     tags:
       - '*'
 
@@ -55,3 +57,18 @@ jobs:
         with:
           name: YunDongIP-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/YunDongIP-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+
+  source-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package source variants
+        shell: bash
+        run: |
+          mkdir -p dist
+          zip -r "dist/YunDongIP-0.1.0-pure-source.zip" cmd/yundongip/main.go cmd/yundongip/index.html go.mod
+          git archive --format=zip --output="dist/YunDongIP-0.1.0-source-protected.zip" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YunDongIP-0.1.0-source-packages
+          path: dist/YunDongIP-0.1.0-*.zip
