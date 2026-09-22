@@ -14,4 +14,4 @@ Official releases are published through the YunDongIP GitHub repository and acco
 
 ## License
 
-YunDongIP 0.1.0 is distributed under GPL-3.0-only.
+YunDongIP official releases are distributed under GPL-3.0-only.
