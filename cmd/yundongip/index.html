@@ -4,8 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="yundongip-project" content="YunDongIP|0.1.1|YDI-PROVENANCE-0.1.1-A73D91F4">
+    <meta name="yundongip-project" content="YunDongIP|0.1.1|YDI-PROVENANCE-0.1.1-9C4E7A12">
     <title>域动ip cloudflare优选 · 动态自愈皇位中枢</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-family='Arial,sans-serif' font-size='20' font-weight='900' fill='white'%3EYDip%3C/text%3E%3C/svg%3E">
     <script>
         (function() {
             const valid = ['black-pink', 'kawaii-pink', 'cockpit-white'];
@@ -237,6 +238,43 @@
             .pool-chamber-section { min-height:260px !important; max-height:55dvh; }
             .chamber-scroll-area { min-height:180px !important; }
             .log-terminal-mini { min-height:220px !important; max-height:48dvh; }
+        }
+        @media (max-height: 760px) and (min-width: 769px) {
+            body { overflow-y:auto !important; }
+            .cockpit-grid-stage {
+                height:auto !important; min-height:0 !important; max-height:none !important;
+                overflow:visible !important; align-items:start;
+            }
+            .side-column-pack {
+                height:auto !important; max-height:none !important; overflow:visible !important;
+            }
+            .scrollable-feed-column {
+                height:560px !important; min-height:420px !important; max-height:70dvh !important;
+                overflow:hidden !important;
+            }
+            .panel-box { min-height:0; }
+        }
+        @media (max-width: 768px) {
+            .cockpit-grid-stage > .side-column-pack:first-child { order:0; }
+            .cockpit-grid-stage > .scrollable-feed-column { order:1; }
+            .cockpit-grid-stage > .side-column-pack:last-child { order:2; }
+            .cockpit-header, .kpi-ticker-strip, .throne-seat-card, .emperor-profile-banner,
+            .throne-drawer-wrap, .panel-box, .stream-scroll-stage { border-radius:12px; }
+            .cockpit-header { position:relative; }
+            .brand-badge {
+                background:linear-gradient(135deg,#0f172a,#334155);
+                box-shadow:0 6px 16px rgba(15,23,42,.22);
+            }
+            .emperor-profile-banner > div:first-child { flex-wrap:wrap; gap:6px; }
+            #cardTimerTip { display:block; width:100%; margin:2px 0 0 !important; }
+            .trace-hops-rack { overflow-x:auto; flex-wrap:nowrap; }
+            .hop-pill { white-space:nowrap; flex:0 0 auto; }
+            .feed-switch-bar { overflow-x:auto; flex-wrap:nowrap; }
+            .feed-tab-btn { flex:0 0 auto; min-width:96px; }
+            .panel-box[style*="flex:1"], .panel-box[style*="flex:1.2"], .panel-box[style*="flex:0.8"] {
+                max-height:320px;
+            }
+            #coldPoolList, #retiredPoolList, #logBox { max-height:240px; }
         }
         @media (max-width: 430px) {
             .header-controls { grid-template-columns:1fr; }
@@ -480,8 +518,9 @@
         let ws, scanResultsCount=0, testResultsCount=0, currentFeedMode='scan', cachedPipeData=null, scanData=[], testData=[], dcList=[], inspectedIP=null, isTaskActive=false;
         let scanBuffer=[], flushTimer=null, stopCountdownTimer=null, currentProbeMode='tcp';
         let scanIndexMap=new Map(), precisionStageMap=new Map(), precisionStageGroups=new Map();
-        let testRenderLimit=160, testRenderQueued=false;
-        const TEST_RENDER_BATCH=160, MAX_LIVE_SCAN_DOM=480;
+        let precisionSortedChunks=[], precisionPendingChunk=[];
+        let testRenderLimit=120, testRenderQueued=false, testSortTimer=null;
+        const TEST_RENDER_BATCH=120, MAX_LIVE_SCAN_DOM=360, PRECISION_SORT_CHUNK=240;
         let rankDeferredTimer=null, rankDeferredDueAt=0, rankStageReady=false;
         const RANK_DEFER_MS=30000;
         let wsConnecting=false, wsReady=false, wsReconnectTimer=null;
@@ -675,9 +714,56 @@
         function resetPrecisionStage() {
             precisionStageMap = new Map();
             precisionStageGroups = new Map();
+            precisionSortedChunks = [];
+            precisionPendingChunk = [];
             testRenderLimit = TEST_RENDER_BATCH;
+            if (testSortTimer) { clearTimeout(testSortTimer); testSortTimer = null; }
             const feed = document.getElementById('feedTestCount');
             if (feed) feed.textContent = '0';
+        }
+
+        function precisionComparator(a, b) {
+            const la = scanLossRate(a), lb = scanLossRate(b);
+            if (la !== lb) return la - lb;
+            const aa = scanLatencyMs(a), ab = scanLatencyMs(b);
+            if (aa !== ab) return aa - ab;
+            const ma = Number(a?.MinLatency || Number.MAX_SAFE_INTEGER);
+            const mb = Number(b?.MinLatency || Number.MAX_SAFE_INTEGER);
+            if (ma !== mb) return ma - mb;
+            return String(a?.IP || '').localeCompare(String(b?.IP || ''));
+        }
+
+        function flushPrecisionSortChunk() {
+            if (!precisionPendingChunk.length) return;
+            const chunk = precisionPendingChunk.splice(0, precisionPendingChunk.length);
+            chunk.sort(precisionComparator);
+            precisionSortedChunks.push(chunk);
+        }
+
+        function mergeTwoSortedPrecision(a, b) {
+            const out = new Array(a.length + b.length);
+            let i=0, j=0, k=0;
+            while (i<a.length && j<b.length) out[k++] = precisionComparator(a[i], b[j]) <= 0 ? a[i++] : b[j++];
+            while (i<a.length) out[k++] = a[i++];
+            while (j<b.length) out[k++] = b[j++];
+            return out;
+        }
+
+        function mergePrecisionChunksAsync(done) {
+            flushPrecisionSortChunk();
+            let chunks = precisionSortedChunks.slice();
+            if (!chunks.length) { done([]); return; }
+            const step = () => {
+                if (chunks.length <= 1) { done(chunks[0] || []); return; }
+                const next = [];
+                for (let i=0; i<chunks.length; i+=2) {
+                    next.push(i+1 < chunks.length ? mergeTwoSortedPrecision(chunks[i], chunks[i+1]) : chunks[i]);
+                }
+                chunks = next;
+                if ('requestIdleCallback' in window) requestIdleCallback(step, {timeout:120});
+                else setTimeout(step, 0);
+            };
+            step();
         }
 
         function stagePrecisionBatch(batch) {
@@ -689,6 +775,8 @@
                 const existed = precisionStageMap.has(key);
                 precisionStageMap.set(key, {...item});
                 if (!existed) {
+                    precisionPendingChunk.push({...item});
+                    if (precisionPendingChunk.length >= PRECISION_SORT_CHUNK) flushPrecisionSortChunk();
                     let g = precisionStageGroups.get(dc);
                     if (!g) {
                         g = {
@@ -717,28 +805,30 @@
             if (feed && !rankStageReady) feed.textContent = precisionStageMap.size;
         }
 
-        function buildPrecisionBoardFromScan() {
+        function buildPrecisionBoardFromScanAsync(done) {
             if (precisionStageMap.size === 0 && scanData.length) {
                 stagePrecisionBatch(scanData);
             }
-            testData = Array.from(precisionStageMap.values());
-            sortTestDataRanked();
-            testResultsCount = testData.length;
-            selectedPrecisionDC = '';
-            testRenderLimit = TEST_RENDER_BATCH;
+            mergePrecisionChunksAsync(sortedRows => {
+                // 只保留仍存在于最新 Map 中的候选；扫描阶段已经把排序压力分散到小块。
+                testData = sortedRows.filter(row => precisionStageMap.has(`${row.IP}|${row.Port}`));
+                testResultsCount = testData.length;
+                selectedPrecisionDC = '';
+                testRenderLimit = TEST_RENDER_BATCH;
 
-            dcList = Array.from(precisionStageGroups.values()).map(g => ({
-                DataCenter: g.DataCenter,
-                Country: g.Country,
-                Region: g.Region,
-                City: g.City,
-                IPCount: g.IPCount,
-                MinLossRate: g.MinLossRate,
-                AvgLatency: g._latencyCount ? Math.round(g._latencySum / g._latencyCount) : '--'
-            })).sort((a,b) => String(a.DataCenter).localeCompare(String(b.DataCenter)));
+                dcList = Array.from(precisionStageGroups.values()).map(g => ({
+                    DataCenter: g.DataCenter,
+                    Country: g.Country,
+                    Region: g.Region,
+                    City: g.City,
+                    IPCount: g.IPCount,
+                    MinLossRate: g.MinLossRate,
+                    AvgLatency: g._latencyCount ? Math.round(g._latencySum / g._latencyCount) : '--'
+                })).sort((a,b) => String(a.DataCenter).localeCompare(String(b.DataCenter)));
 
-            document.getElementById('feedTestCount').textContent = testResultsCount;
-            return { candidates: testResultsCount, colos: dcList.length };
+                document.getElementById('feedTestCount').textContent = testResultsCount;
+                done({ candidates: testResultsCount, colos: dcList.length });
+            });
         }
 
         function scanDomKey(res) {
@@ -780,13 +870,12 @@
             rankDeferredTimer=setTimeout(() => {
                 rankDeferredTimer=null;
                 rankDeferredDueAt=0;
-                log('🧩 开始完成精测候选最终排序；地区分类已在扫描阶段分批预载...');
-                const summary = buildPrecisionBoardFromScan();
-                rankStageReady=true;
-                if (currentFeedMode === 'test') {
-                    renderTestStageContent();
-                }
-                log(`✅ 精测榜整理完成：${summary.candidates} 个已分类候选，${summary.colos} 个 CF Colo；探测流仍保持扫描原始顺序。`);
+                log('🧩 开始合并扫描阶段的小块预排序结果；主线程将分批让出，避免整榜一次性卡死...');
+                buildPrecisionBoardFromScanAsync(summary => {
+                    rankStageReady=true;
+                    if (currentFeedMode === 'test') renderTestStageContent();
+                    log(`✅ 精测榜整理完成：${summary.candidates} 个已分类候选，${summary.colos} 个 CF Colo；探测流仍保持扫描原始顺序。`);
+                });
             }, RANK_DEFER_MS);
         }
 
@@ -990,13 +1079,21 @@
             });
         }
 
+        function queueTestSortAndRender() {
+            if (testSortTimer) return;
+            testSortTimer = setTimeout(() => {
+                testSortTimer = null;
+                sortTestDataRanked();
+                scheduleTestRender();
+            }, 220);
+        }
+
         function addTestResult(res) {
             const idx = testData.findIndex(x => x.IP === res.IP && x.Port === res.Port);
             if (idx >= 0) testData[idx] = res; else testData.push(res);
             testResultsCount = testData.length;
-            sortTestDataRanked();
             document.getElementById('feedTestCount').textContent = testResultsCount;
-            scheduleTestRender();
+            queueTestSortAndRender();
         }
 
         function loadMoreTestResults() {
@@ -1489,15 +1586,17 @@
 
         function applyResponsiveViewport() {
             const root = document.documentElement;
-            const w = window.innerWidth || document.documentElement.clientWidth || 1280;
-            const h = window.innerHeight || document.documentElement.clientHeight || 800;
-            if (w > 1200) {
-                const stageHeight = Math.max(360, Math.min(760, h - 350));
+            const vv = window.visualViewport;
+            const w = Math.round(vv?.width || window.innerWidth || document.documentElement.clientWidth || 1280);
+            const h = Math.round(vv?.height || window.innerHeight || document.documentElement.clientHeight || 800);
+            if (w > 1200 && h > 760) {
+                const stageHeight = Math.max(420, Math.min(760, h - 330));
                 root.style.setProperty('--ydi-stage-height', stageHeight + 'px');
             } else {
                 root.style.removeProperty('--ydi-stage-height');
             }
-            root.dataset.ydiViewport = w <= 768 ? 'mobile' : (h <= 820 ? 'compact-desktop' : 'desktop');
+            root.dataset.ydiViewport = w <= 768 ? 'mobile' : (h <= 760 ? 'short-desktop' : (h <= 900 ? 'compact-desktop' : 'desktop'));
+            root.style.setProperty('--ydi-viewport-height', h + 'px');
         }
 
         let viewportResizeTimer=null;
@@ -1506,6 +1605,12 @@
             viewportResizeTimer=setTimeout(applyResponsiveViewport, 120);
         }, {passive:true});
         window.addEventListener('orientationchange', () => setTimeout(applyResponsiveViewport, 180), {passive:true});
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => {
+                if (viewportResizeTimer) clearTimeout(viewportResizeTimer);
+                viewportResizeTimer=setTimeout(applyResponsiveViewport, 100);
+            }, {passive:true});
+        }
 
         window.addEventListener('DOMContentLoaded', () => {
             applyResponsiveViewport();
