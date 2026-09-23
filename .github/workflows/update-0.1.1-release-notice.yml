@@ -1,0 +1,74 @@
+name: update-0.1.1-release-notice
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/update-0.1.1-release-notice.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-release-notice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update 0.1.1 release notice
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          # ⚠️ YunDongIP 0.1.1 — 公开测试 / 内测体验版
+
+          > **当前版本不是正式稳定版。**
+          >
+          > 目前提前开放下载，是为了让更多不同设备、系统、网络和地区参与实际测试。现阶段仍可能存在 Bug、界面适配、扫描结果、性能或客户端兼容问题。
+          >
+          > 如果发现问题，请到 GitHub Issues 留言。建议附上 YunDongIP 版本、系统/设备、客户端、扫描设置、复现步骤、截图或日志。**请勿公开 Cloudflare API Token。**
+          >
+          > 维护者会根据真实反馈继续测试、修复、优化和升级。
+
+          ## 📖 第一次使用
+
+          完整文字教程：
+
+          https://github.com/zeruiouo-blip/YunDongIP/blob/main/docs/USER-GUIDE.md
+
+          建议第一次先使用测试子域，不要直接替换正在承载重要业务的正式域名。
+
+          ## 0.1.1 本次修复
+
+          - Android / 手机浏览器完整功能页面改为响应式布局，并加入 YDip 启动图标。
+          - 桌面页面按实际浏览器宽高自动适配，低分辨率可正常滚动并访问全部功能。
+          - 数字身份证首跳改为自动识别当前公网出口地区与运营商；旧缓存画像会同步刷新，不再固定显示杭州。
+          - 扫描阶段每约 240 个候选做小块预排序；扫描结束后分批合并结果。
+          - 精测详细列表按约 120 条分批显示，后续精测结果采用节流批量排序，降低大规模扫描时网页卡顿。
+          - Windows / macOS / Android / Linux 全部同步 0.1.1 核心代码。
+
+          ## 当前核心流程
+
+          扫描层：TCP×4 粗筛 → CF Trace 地区分类 → 精测候选。
+
+          动态流水线：R2 真实测速 → R3 水库 → R3.5 擂台 → R4 待命巡检 → Cloudflare 域名自动上位 / 替换。
+
+          核心 R2 / R3 / R3.5 / R4 机制在本修复版中没有因为 UI 优化而删减。
+
+          ## 源码与校验
+
+          官方 Release 提供保护增强版源码，保留 GPL、版权、PROVENANCE、SECURITY、构建脚本及 GitHub Actions 构建来源信息。
+
+          SHA256SUMS.txt 可用于核对下载文件是否与官方发布文件一致。
+
+          ## Bug 反馈
+
+          请直接使用仓库的 Bug 反馈模板：
+
+          https://github.com/zeruiouo-blip/YunDongIP/issues/new/choose
+
+          当前阶段最需要的是不同网络和不同设备的真实反馈。
+          EOF
+
+          gh release edit 0.1.1             --repo zeruiouo-blip/YunDongIP             --title "YunDongIP 0.1.1 · 公开测试版"             --notes-file /tmp/release-notes.md
