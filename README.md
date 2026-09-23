@@ -18,7 +18,7 @@ YunDongIP 0.1.1 是一个独立开发的新型 Cloudflare Anycast 动态优选�
 
 官方仓库：`https://github.com/zeruiouo-blip/YunDongIP`
 
-源码与程序内置可见项目标识：`YDI-PROVENANCE-0.1.1-A73D91F4`。官方 Release 会提供 SHA-256 校验值；CI 构建还可使用 GitHub 的签名构建来源证明。
+源码与程序内置可见项目标识：`YDI-PROVENANCE-0.1.1-9C4E7A12`。官方 Release 会提供 SHA-256 校验值；CI 构建还可使用 GitHub 的签名构建来源证明。
 
 ## 0.1.1 修复重点
 
@@ -51,6 +51,8 @@ YunDongIP 以持续动态优选、自适应节点竞争和长期自愈为核心�
 `cmd/yundongip/main.go`：程序核心。
 
 `cmd/yundongip/index.html`：项目 Web 前端。
+
+`docs/USER-GUIDE.md`：公开测试版完整使用教程。
 
 `docs/BEHAVIOR-BASELINE.md`：冻结行为核对表。
 
