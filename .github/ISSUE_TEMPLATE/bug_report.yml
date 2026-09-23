@@ -1,0 +1,110 @@
+name: Bug 反馈
+description: YunDongIP 公开测试版问题反馈
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢参与 YunDongIP 公开测试。请尽量填写完整，越完整越容易复现和修复。
+        
+        **请勿提交 Cloudflare API Token、密码、Cookie 或其它敏感信息。**
+
+  - type: input
+    id: version
+    attributes:
+      label: YunDongIP 版本
+      description: 例如 0.1.1
+      placeholder: 0.1.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台 / 客户端
+      options:
+        - Windows x64
+        - Windows ARM64
+        - macOS Universal
+        - Android ARM64
+        - Linux x64
+        - Linux ARM64
+        - 源码自行构建
+        - 其它
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 系统版本 / 设备
+      description: 例如 Windows 10 22H2、Android 15 + 手机型号、macOS 版本
+      placeholder: 请填写系统版本和设备
+    validations:
+      required: true
+
+  - type: textarea
+    id: network
+    attributes:
+      label: 网络与扫描设置
+      description: 请填写 IPv4/IPv6、端口、并发、采样模式、地区筛选等关键设置
+      placeholder: |
+        IPv4/IPv6:
+        端口:
+        并发:
+        采样模式:
+        地区筛选:
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 实际发生了什么
+      description: 请尽量具体描述异常现象
+      placeholder: 实际结果是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你预期应该发生什么
+      placeholder: 正常情况下你认为应该是什么结果？
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序写，最好别人照着就能复现
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducible
+    attributes:
+      label: 是否可以稳定复现
+      options:
+        - 每次都会
+        - 偶尔发生
+        - 只发生过一次
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图 / 日志 / 补充信息
+      description: 可直接拖入截图。日志请先检查并删除 Token 等敏感信息。
+      placeholder: 在这里粘贴日志、截图或其它补充信息
+    validations:
+      required: false
