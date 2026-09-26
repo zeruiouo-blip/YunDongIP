@@ -1,0 +1,32 @@
+name: multipath-lab-build
+on:
+  workflow_dispatch:
+  push:
+    branches: [multipath-lab]
+    paths:
+      - 'cmd/ydi-multipath/**'
+      - 'go.mod'
+      - 'go.sum'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            out: ydi-multipath-windows-amd64.exe
+          - goos: linux
+            goarch: amd64
+            out: ydi-multipath-linux-amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - run: go mod tidy
+      - run: GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags="-s -w" -o "${{ matrix.out }}" ./cmd/ydi-multipath
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: ${{ matrix.out }}
