@@ -24,7 +24,7 @@ const (
 	data   byte = 2
 	closem byte = 3
 
-	chunkSize = 256 * 1024
+	chunkSize = 32 * 1024
 	txQueue   = 512
 )
 
@@ -62,7 +62,6 @@ type lane struct {
 }
 
 func (l *lane) write(f frame) error {
-	_ = l.c.SetWriteDeadline(time.Now().Add(8 * time.Second))
 	b := enc(f)
 	if err := l.c.WriteMessage(websocket.BinaryMessage, b); err != nil {
 		return err
