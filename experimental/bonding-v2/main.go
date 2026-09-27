@@ -1,13 +1,13 @@
 package main
 
 import (
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -301,6 +301,18 @@ func (r *receiver) finish(final uint64) {
 	if fn != nil {
 		fn()
 	}
+}
+
+func newStreamID() (uint64, error) {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	sid := binary.BigEndian.Uint64(b[:])
+	if sid == 0 {
+		sid = 1
+	}
+	return sid, nil
 }
 
 func closeWrite(c net.Conn) {
@@ -660,7 +672,12 @@ func runClient(listen, domain, path, token string, port int, ips []string) error
 			return err
 		}
 		go func(c net.Conn) {
-			sid := rand.Uint64()
+			sid, err := newStreamID()
+			if err != nil {
+				log.Printf("LOCAL ACCEPT id generation failed from=%s err=%v", c.RemoteAddr(), err)
+				_ = c.Close()
+				return
+			}
 			log.Printf("LOCAL ACCEPT sid=%d from=%s", sid, c.RemoteAddr())
 			st := h.addStream(sid, c)
 			if err := h.sendControl(frame{typ: ftOpen, sid: sid}); err != nil {
