@@ -31,11 +31,13 @@ const (
 	laneDataQueueDepth    = 32
 	laneControlQueueDepth = 1024
 	startupRateBps        = 8 * 1024 * 1024
-	minCreditPerLane      = 2 * 1024 * 1024
-	defaultCreditHorizon  = 500 * time.Millisecond
+	startupCreditPerLane  = 6 * 1024 * 1024
+	minCreditPerLane      = 256 * 1024
+	defaultCreditHorizon  = 1500 * time.Millisecond
 	defaultRTO            = 500 * time.Millisecond
-	gapRescueDelay        = 100 * time.Millisecond
-	gapRescueRepeat       = 150 * time.Millisecond
+	gapRescueDelay        = 80 * time.Millisecond
+	gapRescueRepeat       = 100 * time.Millisecond
+	gapBatchMax           = 64
 	laneWriteTimeout      = 15 * time.Second
 
 	// Phase-1 aggregation deliberately relies on the reliability of each
@@ -349,14 +351,14 @@ type receiver struct {
 	finSet bool
 	fin    uint64
 	onFin  func()
-	onGap  func(uint64)
+	onGap  func([]uint64)
 
 	gapSeq   uint64
 	gapArmed bool
 	gapGen   uint64
 }
 
-func newReceiver(w io.Writer, onFin func(), onGap func(uint64)) *receiver {
+func newReceiver(w io.Writer, onFin func(), onGap func([]uint64)) *receiver {
 	return &receiver{buf: make(map[uint64][]byte), w: w, onFin: onFin, onGap: onGap}
 }
 
@@ -382,6 +384,28 @@ func (r *receiver) updateGapLocked() {
 	go r.watchGap(missing, gen)
 }
 
+func (r *receiver) gapBatchLocked() []uint64 {
+	if r.onGap == nil {
+		return nil
+	}
+	maxSeq := r.next
+	for s := range r.buf {
+		if s > maxSeq {
+			maxSeq = s
+		}
+	}
+	if r.finSet && r.fin > 0 && r.fin-1 > maxSeq {
+		maxSeq = r.fin - 1
+	}
+	gaps := make([]uint64, 0, gapBatchMax)
+	for s := r.next; s <= maxSeq && len(gaps) < gapBatchMax; s++ {
+		if _, ok := r.buf[s]; !ok {
+			gaps = append(gaps, s)
+		}
+	}
+	return gaps
+}
+
 func (r *receiver) watchGap(seq, gen uint64) {
 	time.Sleep(gapRescueDelay)
 	for {
@@ -392,9 +416,12 @@ func (r *receiver) watchGap(seq, gen uint64) {
 			return
 		}
 		fn := r.onGap
+		gaps := r.gapBatchLocked()
 		r.mu.Unlock()
 
-		fn(seq)
+		if len(gaps) > 0 {
+			fn(gaps)
+		}
 		time.Sleep(gapRescueRepeat)
 	}
 }
@@ -553,7 +580,10 @@ func (h *hub) laneRate(l *lane) uint64 {
 }
 
 func (h *hub) laneCreditBytes(l *lane) int64 {
-	rate := h.laneRate(l)
+	rate := l.rateBps.Load()
+	if rate == 0 {
+		return int64(startupCreditPerLane)
+	}
 	credit := int64(minCreditPerLane) + int64(rate)*int64(h.creditHorizon)/int64(time.Second)
 	if credit < int64(4*chunkSize) {
 		credit = int64(4 * chunkSize)
@@ -574,7 +604,7 @@ func (h *hub) pendingBudgetBytes() int64 {
 		}
 	}
 	if total == 0 {
-		total = int64(minCreditPerLane)
+		total = int64(startupCreditPerLane)
 	}
 	// maxBufferBytes is an operator safety valve only. Zero means no
 	// artificial throughput ceiling; the flow-control budget then scales
@@ -600,13 +630,16 @@ func (h *hub) chooseLane(excluded map[int]bool) *lane {
 			inflight = 0
 		}
 		rate := h.laneRate(l)
-		// Estimated drain time is the base score. Going beyond a lane's
-		// dynamic credit is allowed, but penalized rather than hard-capped.
-		score := inflight * 1000000000 / int64(rate)
 		credit := h.laneCreditBytes(l)
-		if inflight > credit {
-			score += (inflight - credit) * 2000000000 / int64(rate)
+		// A lane may contribute as much throughput as it can actually prove,
+		// but it may not accumulate an arbitrarily deep private backlog.
+		// This prevents a suddenly slow lane from holding megabytes of early
+		// sequence numbers hostage while faster lanes race ahead.
+		if inflight+int64(chunkSize) > credit {
+			continue
 		}
+		// Estimated drain time keeps faster lanes proportionally busier.
+		score := inflight * 1000000000 / int64(rate)
 		if best == nil || score < bestScore {
 			best = l
 			bestScore = score
@@ -629,6 +662,30 @@ func (h *hub) sendControl(f frame) error {
 		excluded[l.id] = true
 	}
 	return fmt.Errorf("control lanes unavailable")
+}
+
+func encodeGapSeqs(gaps []uint64) frame {
+	f := frame{typ: ftGap}
+	if len(gaps) == 0 {
+		return f
+	}
+	f.seq = gaps[0]
+	if len(gaps) > 1 {
+		f.p = make([]byte, 8*(len(gaps)-1))
+		for i, seq := range gaps[1:] {
+			binary.BigEndian.PutUint64(f.p[i*8:(i+1)*8], seq)
+		}
+	}
+	return f
+}
+
+func (h *hub) sendGapBatch(sid uint64, gaps []uint64) {
+	if len(gaps) == 0 {
+		return
+	}
+	f := encodeGapSeqs(gaps)
+	f.sid = sid
+	_ = h.sendControl(f)
 }
 
 func (h *hub) sendAckOn(l *lane, sid, seq uint64) {
@@ -658,7 +715,7 @@ func (h *hub) addStream(sid uint64, c net.Conn) *stream {
 	st.recv = newReceiver(
 		c,
 		func() { closeWrite(c) },
-		func(seq uint64) { _ = h.sendControl(frame{typ: ftGap, sid: sid, seq: seq}) },
+		func(gaps []uint64) { h.sendGapBatch(sid, gaps) },
 	)
 	h.mu.Lock()
 	h.streams[sid] = st
@@ -690,7 +747,7 @@ func (h *hub) ensureServerStream(sid uint64) *stream {
 	candidate.recv = newReceiver(
 		c,
 		func() { closeWrite(c) },
-		func(seq uint64) { _ = h.sendControl(frame{typ: ftGap, sid: sid, seq: seq}) },
+		func(gaps []uint64) { h.sendGapBatch(sid, gaps) },
 	)
 
 	h.mu.Lock()
@@ -733,6 +790,9 @@ func (h *hub) handleFrame(src *lane, f frame) {
 	case ftGap:
 		if st := h.getStream(f.sid); st != nil {
 			st.send.reinject(f.seq)
+			for i := 0; i+8 <= len(f.p); i += 8 {
+				st.send.reinject(binary.BigEndian.Uint64(f.p[i : i+8]))
+			}
 		}
 	case ftClose:
 		if st := h.getStream(f.sid); st != nil {
@@ -810,7 +870,11 @@ func (h *hub) rateLoop() {
 			sample := delta * 2 // bytes per second over a 500ms sample
 			old := l.rateBps.Load()
 			if old == 0 {
-				l.rateBps.Store(sample)
+				seed := sample
+				if seed < startupRateBps {
+					seed = startupRateBps
+				}
+				l.rateBps.Store(seed)
 			} else {
 				l.rateBps.Store((old*3 + sample) / 4)
 			}
@@ -1010,7 +1074,7 @@ func main() {
 	cert := flag.String("cert", "", "TLS fullchain")
 	key := flag.String("key", "", "TLS private key")
 	benchBytes := flag.Int64("bench-bytes", 1<<30, "bench response bytes")
-	creditMS := flag.Int("credit-ms", 500, "dynamic per-lane credit horizon in milliseconds")
+	creditMS := flag.Int("credit-ms", 1500, "dynamic per-lane credit horizon in milliseconds")
 	maxBufferMB := flag.Int64("max-buffer-mb", 0, "optional global pending-data safety ceiling in MiB; 0 disables the artificial ceiling")
 	flag.Parse()
 
