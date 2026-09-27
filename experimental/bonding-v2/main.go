@@ -30,6 +30,14 @@ const (
 	maxPending     = 512 // 16 MiB per logical stream
 	laneQueueDepth = 1024
 	defaultRTO     = 500 * time.Millisecond
+
+	// Phase-1 aggregation deliberately relies on the reliability of each
+	// WebSocket/TCP lane.  Speculative retransmission is disabled until the
+	// base 1-lane -> 2-lane aggregation gate is proven.  The previous timer
+	// started when a frame was queued rather than when it reached the wire,
+	// so a healthy queued frame could be duplicated repeatedly and inflate
+	// per-lane in-flight bytes.
+	enableSpeculativeRetry = false
 )
 
 type frame struct {
@@ -121,7 +129,9 @@ type sender struct {
 func newSender(h *hub, sid uint64) *sender {
 	s := &sender{h: h, sid: sid, pending: make(map[uint64]*pendingPacket)}
 	s.cond = sync.NewCond(&s.mu)
-	go s.retransmitLoop()
+	if enableSpeculativeRetry {
+		go s.retransmitLoop()
+	}
 	return s
 }
 
