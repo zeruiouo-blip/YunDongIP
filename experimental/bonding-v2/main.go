@@ -27,9 +27,10 @@ const (
 	ftGap   byte = 5
 
 	headerSize            = 17
-	chunkSize             = 64 * 1024
-	laneDataQueueDepth    = 32
+	chunkSize             = 256 * 1024
+	laneDataQueueDepth    = 16
 	laneControlQueueDepth = 1024
+	receiverWriteBatchMax = 16
 	startupRateBps        = 8 * 1024 * 1024
 	startupCreditPerLane  = 6 * 1024 * 1024
 	minCreditPerLane      = 256 * 1024
@@ -343,15 +344,17 @@ func (s *sender) finish() uint64 {
 }
 
 type receiver struct {
-	mu sync.Mutex
+	mu   sync.Mutex
+	cond *sync.Cond
 
 	next   uint64
 	buf    map[uint64][]byte
 	w      io.Writer
 	finSet bool
 	fin    uint64
-	onFin  func()
-	onGap  func([]uint64)
+	onFin    func()
+	onGap    func([]uint64)
+	writeErr error
 
 	gapSeq   uint64
 	gapArmed bool
@@ -359,10 +362,22 @@ type receiver struct {
 }
 
 func newReceiver(w io.Writer, onFin func(), onGap func([]uint64)) *receiver {
-	return &receiver{buf: make(map[uint64][]byte), w: w, onFin: onFin, onGap: onGap}
+	r := &receiver{buf: make(map[uint64][]byte), w: w, onFin: onFin, onGap: onGap}
+	r.cond = sync.NewCond(&r.mu)
+	go r.writerLoop()
+	return r
 }
 
 func (r *receiver) updateGapLocked() {
+	// The ordered writer may not have consumed r.next yet. A present next
+	// packet is not a gap and must never trigger a redundant rescue.
+	if _, present := r.buf[r.next]; present {
+		if r.gapArmed {
+			r.gapArmed = false
+			r.gapGen++
+		}
+		return
+	}
 	hasFuture := len(r.buf) > 0 || (r.finSet && r.next < r.fin)
 	if !hasFuture || r.onGap == nil {
 		if r.gapArmed {
@@ -411,7 +426,8 @@ func (r *receiver) watchGap(seq, gen uint64) {
 	for {
 		r.mu.Lock()
 		hasFuture := len(r.buf) > 0 || (r.finSet && r.next < r.fin)
-		if !r.gapArmed || r.gapSeq != seq || r.gapGen != gen || r.next != seq || !hasFuture || r.onGap == nil {
+		_, present := r.buf[seq]
+		if !r.gapArmed || r.gapSeq != seq || r.gapGen != gen || r.next != seq || present || !hasFuture || r.onGap == nil {
 			r.mu.Unlock()
 			return
 		}
@@ -428,37 +444,82 @@ func (r *receiver) watchGap(seq, gen uint64) {
 
 func (r *receiver) put(seq uint64, p []byte) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.writeErr != nil {
+		return r.writeErr
+	}
 	if seq < r.next {
-		r.mu.Unlock()
 		return nil
 	}
 	if _, exists := r.buf[seq]; !exists {
 		r.buf[seq] = append([]byte(nil), p...)
 	}
-	for {
-		v, ok := r.buf[r.next]
-		if !ok {
-			break
-		}
-		if _, err := r.w.Write(v); err != nil {
-			r.mu.Unlock()
-			return err
-		}
-		delete(r.buf, r.next)
-		r.next++
-	}
 	r.updateGapLocked()
-	done := r.finSet && r.next >= r.fin && r.onFin != nil
-	var fn func()
-	if done {
-		fn = r.onFin
-		r.onFin = nil
-	}
-	r.mu.Unlock()
-	if fn != nil {
-		fn()
-	}
+	r.cond.Signal()
 	return nil
+}
+
+// writerLoop is the ordered-delivery hot path. Network lane readers only
+// insert frames into the reorder map under a short mutex; they never block
+// while the local TCP consumer is being written. Contiguous frames are
+// drained in batches using net.Buffers so 12/16/32 lanes can feed the
+// receiver concurrently without serializing every WebSocket read behind
+// one local Write call.
+func (r *receiver) writerLoop() {
+	for {
+		r.mu.Lock()
+		for {
+			if r.writeErr != nil {
+				r.mu.Unlock()
+				return
+			}
+			if _, ok := r.buf[r.next]; ok {
+				break
+			}
+			if r.finSet && r.next >= r.fin {
+				fn := r.onFin
+				r.onFin = nil
+				r.mu.Unlock()
+				if fn != nil {
+					fn()
+				}
+				return
+			}
+			r.updateGapLocked()
+			r.cond.Wait()
+		}
+
+		batch := make(net.Buffers, 0, receiverWriteBatchMax)
+		for len(batch) < receiverWriteBatchMax {
+			v, ok := r.buf[r.next]
+			if !ok {
+				break
+			}
+			delete(r.buf, r.next)
+			batch = append(batch, v)
+			r.next++
+		}
+		r.updateGapLocked()
+		done := r.finSet && r.next >= r.fin && r.onFin != nil
+		var fn func()
+		if done {
+			fn = r.onFin
+			r.onFin = nil
+		}
+		r.mu.Unlock()
+
+		if _, err := batch.WriteTo(r.w); err != nil {
+			r.mu.Lock()
+			r.writeErr = err
+			r.mu.Unlock()
+			log.Printf("receiver ordered writer failed: %v", err)
+			return
+		}
+		if fn != nil {
+			fn()
+			return
+		}
+	}
 }
 
 func (r *receiver) finish(final uint64) {
@@ -466,16 +527,8 @@ func (r *receiver) finish(final uint64) {
 	r.finSet = true
 	r.fin = final
 	r.updateGapLocked()
-	done := r.next >= r.fin && r.onFin != nil
-	var fn func()
-	if done {
-		fn = r.onFin
-		r.onFin = nil
-	}
+	r.cond.Broadcast()
 	r.mu.Unlock()
-	if fn != nil {
-		fn()
-	}
 }
 
 func newStreamID() (uint64, error) {
@@ -957,8 +1010,8 @@ func runClient(listen, domain, path, token string, port int, ips []string, credi
 				MinVersion: tls.VersionTLS12,
 			},
 			HandshakeTimeout: 8 * time.Second,
-			ReadBufferSize:   64 * 1024,
-			WriteBufferSize:  64 * 1024,
+			ReadBufferSize:   chunkSize,
+			WriteBufferSize:  chunkSize,
 		}
 		hd := http.Header{}
 		hd.Set("Host", domain)
@@ -1009,8 +1062,8 @@ func runServer(listen, path, token, target, cert, key string, creditHorizon time
 	h := newHub(target, creditHorizon, maxBufferBytes)
 	up := websocket.Upgrader{
 		CheckOrigin:     func(*http.Request) bool { return true },
-		ReadBufferSize:  64 * 1024,
-		WriteBufferSize: 64 * 1024,
+		ReadBufferSize:  chunkSize,
+		WriteBufferSize: chunkSize,
 	}
 
 	mux := http.NewServeMux()
