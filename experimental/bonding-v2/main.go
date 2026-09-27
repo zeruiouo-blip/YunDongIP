@@ -36,6 +36,7 @@ const (
 	defaultRTO            = 500 * time.Millisecond
 	gapRescueDelay        = 100 * time.Millisecond
 	gapRescueRepeat       = 150 * time.Millisecond
+	laneWriteTimeout      = 15 * time.Second
 
 	// Phase-1 aggregation deliberately relies on the reliability of each
 	// WebSocket/TCP lane.  Speculative retransmission is disabled until the
@@ -121,6 +122,7 @@ func (l *lane) writeItem(it txItem) bool {
 	if !l.ok.Load() {
 		return false
 	}
+	_ = l.c.SetWriteDeadline(time.Now().Add(laneWriteTimeout))
 	if err := l.c.WriteMessage(websocket.BinaryMessage, it.data); err != nil {
 		l.ok.Store(false)
 		_ = l.c.Close()
@@ -207,47 +209,54 @@ func (s *sender) sendData(p []byte) error {
 
 func (s *sender) transmit(pkt *pendingPacket, exclude int) error {
 	payload := encodeFrame(frame{typ: ftData, sid: s.sid, seq: pkt.seq, p: pkt.payload})
-	active := s.h.activeCount()
-	if active == 0 {
-		return fmt.Errorf("no active lane")
-	}
 
-	excluded := make(map[int]bool)
-	if exclude >= 0 && active > 1 {
-		excluded[exclude] = true
-	}
-
-	for tries := 0; tries < active; tries++ {
-		l := s.h.chooseLane(excluded)
-		if l == nil {
-			break
+	for {
+		active := s.h.activeCount()
+		if active == 0 {
+			return fmt.Errorf("no active lane")
 		}
 
-		s.mu.Lock()
-		// ACK may have removed this packet while another lane was being selected.
-		if cur := s.pending[pkt.seq]; cur != pkt {
+		excluded := make(map[int]bool)
+		if exclude >= 0 && active > 1 {
+			excluded[exclude] = true
+		}
+
+		for tries := 0; tries < active; tries++ {
+			l := s.h.chooseLane(excluded)
+			if l == nil {
+				break
+			}
+
+			s.mu.Lock()
+			// ACK may have removed this packet while another lane was being selected.
+			if cur := s.pending[pkt.seq]; cur != pkt {
+				s.mu.Unlock()
+				return nil
+			}
+			n := int64(len(pkt.payload))
+			pkt.attempts[l.id]++
+			l.inflight.Add(n)
+			if l.enqueueData(payload) {
+				pkt.lastSent = time.Now()
+				pkt.lastLane = l.id
+				s.mu.Unlock()
+				return nil
+			}
+			// A full per-lane queue must never stall the whole bonded stream or
+			// kill the stream. Roll this attempt back and try another lane.
+			l.inflight.Add(-n)
+			pkt.attempts[l.id]--
+			if pkt.attempts[l.id] == 0 {
+				delete(pkt.attempts, l.id)
+			}
 			s.mu.Unlock()
-			return nil
+			excluded[l.id] = true
 		}
-		n := int64(len(pkt.payload))
-		pkt.attempts[l.id]++
-		l.inflight.Add(n)
-		if l.enqueueData(payload) {
-			pkt.lastSent = time.Now()
-			pkt.lastLane = l.id
-			s.mu.Unlock()
-			return nil
-		}
-		// A full per-lane queue must never stall the whole bonded stream.
-		l.inflight.Add(-n)
-		pkt.attempts[l.id]--
-		if pkt.attempts[l.id] == 0 {
-			delete(pkt.attempts, l.id)
-		}
-		s.mu.Unlock()
-		excluded[l.id] = true
+
+		// Every active lane is momentarily queue-full. Wait for writers to
+		// drain instead of binding the global sender to one slow lane.
+		time.Sleep(time.Millisecond)
 	}
-	return fmt.Errorf("all active lane queues busy")
 }
 
 func (s *sender) ack(seq uint64, ackLane int) {
