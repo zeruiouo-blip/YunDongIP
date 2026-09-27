@@ -384,19 +384,12 @@ func (h *hub) chooseLane(exclude int) *lane {
 }
 
 func (h *hub) sendControl(f frame) error {
-	b := encodeFrame(f)
-	h.mu.RLock()
-	lanes := append([]*lane(nil), h.lanes...)
-	h.mu.RUnlock()
-
-	sent := 0
-	for _, l := range lanes {
-		if l.ok.Load() && l.enqueue(b) {
-			sent++
-		}
-	}
-	if sent == 0 {
+	l := h.chooseLane(-1)
+	if l == nil {
 		return fmt.Errorf("no active lanes")
+	}
+	if !l.enqueue(encodeFrame(f)) {
+		return fmt.Errorf("control lane unavailable")
 	}
 	return nil
 }
@@ -430,6 +423,7 @@ func (h *hub) ensureServerStream(sid uint64) *stream {
 	if st := h.getStream(sid); st != nil {
 		return st
 	}
+	log.Printf("STREAM OPEN sid=%d dialing target=%s", sid, h.target)
 
 	c, err := net.DialTimeout("tcp", h.target, 8*time.Second)
 	if err != nil {
@@ -449,6 +443,7 @@ func (h *hub) ensureServerStream(sid uint64) *stream {
 	}
 	h.streams[sid] = candidate
 	h.mu.Unlock()
+	log.Printf("STREAM READY sid=%d target=%s", sid, h.target)
 
 	go h.pumpConnToTunnel(sid, candidate)
 	return candidate
@@ -506,9 +501,14 @@ func (h *hub) readLane(l *lane) {
 
 func (h *hub) pumpConnToTunnel(sid uint64, st *stream) {
 	b := make([]byte, chunkSize)
+	first := true
 	for {
 		n, err := st.conn.Read(b)
 		if n > 0 {
+			if first {
+				log.Printf("STREAM FIRST-READ sid=%d bytes=%d", sid, n)
+				first = false
+			}
 			if e := st.send.sendData(b[:n]); e != nil {
 				log.Printf("STREAM %d send failed: %v", sid, e)
 				break
@@ -607,8 +607,11 @@ func runClient(listen, domain, path, token string, port int, ips []string) error
 		}
 		go func(c net.Conn) {
 			sid := rand.Uint64()
+			log.Printf("LOCAL ACCEPT sid=%d from=%s", sid, c.RemoteAddr())
 			st := h.addStream(sid, c)
-			_ = h.sendControl(frame{typ: ftOpen, sid: sid})
+			if err := h.sendControl(frame{typ: ftOpen, sid: sid}); err != nil {
+				log.Printf("STREAM OPEN send failed sid=%d err=%v", sid, err)
+			}
 			h.pumpConnToTunnel(sid, st)
 			_ = c.Close()
 		}(c)
