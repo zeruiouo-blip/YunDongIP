@@ -26,14 +26,16 @@ const (
 	ftClose byte = 4
 	ftGap   byte = 5
 
-	headerSize        = 17
-	chunkSize         = 32 * 1024
-	pendingPerLane    = 256  // 8 MiB application window per active lane
-	maxPendingCap     = 1024 // 32 MiB global ceiling: enough BDP without huge reorder lead
-	laneQueueDepth    = 1024
-	defaultRTO        = 500 * time.Millisecond
-	gapRescueDelay    = 100 * time.Millisecond
-	gapRescueRepeat   = 150 * time.Millisecond
+	headerSize            = 17
+	chunkSize             = 64 * 1024
+	laneDataQueueDepth    = 32
+	laneControlQueueDepth = 1024
+	startupRateBps        = 8 * 1024 * 1024
+	minCreditPerLane      = 2 * 1024 * 1024
+	defaultCreditHorizon  = 500 * time.Millisecond
+	defaultRTO            = 500 * time.Millisecond
+	gapRescueDelay        = 100 * time.Millisecond
+	gapRescueRepeat       = 150 * time.Millisecond
 
 	// Phase-1 aggregation deliberately relies on the reliability of each
 	// WebSocket/TCP lane.  Speculative retransmission is disabled until the
@@ -77,10 +79,11 @@ type txItem struct {
 }
 
 type lane struct {
-	id   int
-	name string
-	c    *websocket.Conn
-	q    chan txItem
+	id      int
+	name    string
+	c       *websocket.Conn
+	dataQ   chan txItem
+	controlQ chan txItem
 
 	ok         atomic.Bool
 	inflight   atomic.Int64
@@ -90,35 +93,68 @@ type lane struct {
 	rateBps    atomic.Uint64
 }
 
-func (l *lane) enqueue(b []byte) bool {
+func (l *lane) enqueueData(b []byte) bool {
 	if !l.ok.Load() {
 		return false
 	}
-	l.q <- txItem{data: b}
+	select {
+	case l.dataQ <- txItem{data: b}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *lane) enqueueControl(b []byte) bool {
+	if !l.ok.Load() {
+		return false
+	}
+	select {
+	case l.controlQ <- txItem{data: b}:
+		return true
+	case <-time.After(10 * time.Millisecond):
+		return false
+	}
+}
+
+func (l *lane) writeItem(it txItem) bool {
+	if !l.ok.Load() {
+		return false
+	}
+	if err := l.c.WriteMessage(websocket.BinaryMessage, it.data); err != nil {
+		l.ok.Store(false)
+		_ = l.c.Close()
+		log.Printf("LANE DOWN %s write=%v", l.name, err)
+		return false
+	}
+	l.txBytes.Add(uint64(len(it.data)))
 	return true
 }
 
 func (l *lane) writer() {
-	for it := range l.q {
-		if !l.ok.Load() {
+	for {
+		var it txItem
+		select {
+		case it = <-l.controlQ:
+		default:
+			select {
+			case it = <-l.controlQ:
+			case it = <-l.dataQ:
+			}
+		}
+		if !l.writeItem(it) {
 			return
 		}
-		if err := l.c.WriteMessage(websocket.BinaryMessage, it.data); err != nil {
-			l.ok.Store(false)
-			_ = l.c.Close()
-			log.Printf("LANE DOWN %s write=%v", l.name, err)
-			return
-		}
-		l.txBytes.Add(uint64(len(it.data)))
 	}
 }
 
 type pendingPacket struct {
-	seq      uint64
-	payload  []byte
-	lastSent time.Time
-	lastLane int
-	attempts map[int]int
+	seq        uint64
+	payload    []byte
+	lastSent   time.Time
+	lastRescue time.Time
+	lastLane   int
+	attempts   map[int]int
 }
 
 type sender struct {
@@ -142,13 +178,10 @@ func newSender(h *hub, sid uint64) *sender {
 }
 
 func (s *sender) pendingLimit() int {
-	n := s.h.activeCount()
-	if n < 1 {
-		n = 1
-	}
-	limit := pendingPerLane * n
-	if limit > maxPendingCap {
-		limit = maxPendingCap
+	budget := s.h.pendingBudgetBytes()
+	limit := int(budget / int64(chunkSize))
+	if limit < 32 {
+		limit = 32
 	}
 	return limit
 }
@@ -173,29 +206,48 @@ func (s *sender) sendData(p []byte) error {
 }
 
 func (s *sender) transmit(pkt *pendingPacket, exclude int) error {
-	l := s.h.chooseLane(exclude)
-	if l == nil {
+	payload := encodeFrame(frame{typ: ftData, sid: s.sid, seq: pkt.seq, p: pkt.payload})
+	active := s.h.activeCount()
+	if active == 0 {
 		return fmt.Errorf("no active lane")
 	}
 
-	s.mu.Lock()
-	// ACK may have removed this packet while a retransmission was being selected.
-	if cur := s.pending[pkt.seq]; cur != pkt {
-		s.mu.Unlock()
-		return nil
+	excluded := make(map[int]bool)
+	if exclude >= 0 && active > 1 {
+		excluded[exclude] = true
 	}
-	pkt.lastSent = time.Now()
-	pkt.lastLane = l.id
-	pkt.attempts[l.id]++
-	s.mu.Unlock()
 
-	payload := encodeFrame(frame{typ: ftData, sid: s.sid, seq: pkt.seq, p: pkt.payload})
-	l.inflight.Add(int64(len(pkt.payload)))
-	if !l.enqueue(payload) {
-		l.inflight.Add(-int64(len(pkt.payload)))
-		return fmt.Errorf("lane unavailable")
+	for tries := 0; tries < active; tries++ {
+		l := s.h.chooseLane(excluded)
+		if l == nil {
+			break
+		}
+
+		s.mu.Lock()
+		// ACK may have removed this packet while another lane was being selected.
+		if cur := s.pending[pkt.seq]; cur != pkt {
+			s.mu.Unlock()
+			return nil
+		}
+		n := int64(len(pkt.payload))
+		pkt.attempts[l.id]++
+		l.inflight.Add(n)
+		if l.enqueueData(payload) {
+			pkt.lastSent = time.Now()
+			pkt.lastLane = l.id
+			s.mu.Unlock()
+			return nil
+		}
+		// A full per-lane queue must never stall the whole bonded stream.
+		l.inflight.Add(-n)
+		pkt.attempts[l.id]--
+		if pkt.attempts[l.id] == 0 {
+			delete(pkt.attempts, l.id)
+		}
+		s.mu.Unlock()
+		excluded[l.id] = true
 	}
-	return nil
+	return fmt.Errorf("all active lane queues busy")
 }
 
 func (s *sender) ack(seq uint64, ackLane int) {
@@ -230,6 +282,12 @@ func (s *sender) reinject(seq uint64) {
 		s.mu.Unlock()
 		return
 	}
+	now := time.Now()
+	if !pkt.lastRescue.IsZero() && now.Sub(pkt.lastRescue) < gapRescueRepeat/2 {
+		s.mu.Unlock()
+		return
+	}
+	pkt.lastRescue = now
 	exclude := pkt.lastLane
 	s.mu.Unlock()
 
@@ -294,7 +352,8 @@ func newReceiver(w io.Writer, onFin func(), onGap func(uint64)) *receiver {
 }
 
 func (r *receiver) updateGapLocked() {
-	if len(r.buf) == 0 || r.onGap == nil {
+	hasFuture := len(r.buf) > 0 || (r.finSet && r.next < r.fin)
+	if !hasFuture || r.onGap == nil {
 		if r.gapArmed {
 			r.gapArmed = false
 			r.gapGen++
@@ -318,7 +377,8 @@ func (r *receiver) watchGap(seq, gen uint64) {
 	time.Sleep(gapRescueDelay)
 	for {
 		r.mu.Lock()
-		if !r.gapArmed || r.gapSeq != seq || r.gapGen != gen || r.next != seq || len(r.buf) == 0 || r.onGap == nil {
+		hasFuture := len(r.buf) > 0 || (r.finSet && r.next < r.fin)
+		if !r.gapArmed || r.gapSeq != seq || r.gapGen != gen || r.next != seq || !hasFuture || r.onGap == nil {
 			r.mu.Unlock()
 			return
 		}
@@ -369,6 +429,7 @@ func (r *receiver) finish(final uint64) {
 	r.mu.Lock()
 	r.finSet = true
 	r.fin = final
+	r.updateGapLocked()
 	done := r.next >= r.fin && r.onFin != nil
 	var fn func()
 	if done {
@@ -410,14 +471,24 @@ type stream struct {
 type hub struct {
 	mu sync.RWMutex
 
-	lanes   []*lane
-	streams map[uint64]*stream
-	target  string
-	nextID  int
+	lanes         []*lane
+	streams       map[uint64]*stream
+	target        string
+	nextID        int
+	creditHorizon time.Duration
+	maxBufferBytes int64
 }
 
-func newHub(target string) *hub {
-	h := &hub{streams: make(map[uint64]*stream), target: target}
+func newHub(target string, creditHorizon time.Duration, maxBufferBytes int64) *hub {
+	if creditHorizon <= 0 {
+		creditHorizon = defaultCreditHorizon
+	}
+	h := &hub{
+		streams:        make(map[uint64]*stream),
+		target:         target,
+		creditHorizon: creditHorizon,
+		maxBufferBytes: maxBufferBytes,
+	}
 	go h.statsLoop()
 	go h.rateLoop()
 	return h
@@ -427,7 +498,13 @@ func (h *hub) addLane(name string, c *websocket.Conn) *lane {
 	h.mu.Lock()
 	id := h.nextID
 	h.nextID++
-	l := &lane{id: id, name: name, c: c, q: make(chan txItem, laneQueueDepth)}
+	l := &lane{
+		id:       id,
+		name:     name,
+		c:        c,
+		dataQ:    make(chan txItem, laneDataQueueDepth),
+		controlQ: make(chan txItem, laneControlQueueDepth),
+	}
 	l.ok.Store(true)
 	h.lanes = append(h.lanes, l)
 	h.mu.Unlock()
@@ -458,65 +535,112 @@ func (h *hub) activeCount() int {
 	return n
 }
 
-func (h *hub) chooseLane(exclude int) *lane {
+func (h *hub) laneRate(l *lane) uint64 {
+	rate := l.rateBps.Load()
+	if rate == 0 {
+		return startupRateBps
+	}
+	return rate
+}
+
+func (h *hub) laneCreditBytes(l *lane) int64 {
+	rate := h.laneRate(l)
+	credit := int64(minCreditPerLane) + int64(rate)*int64(h.creditHorizon)/int64(time.Second)
+	if credit < int64(4*chunkSize) {
+		credit = int64(4 * chunkSize)
+	}
+	return credit
+}
+
+func (h *hub) pendingBudgetBytes() int64 {
+	h.mu.RLock()
+	lanes := append([]*lane(nil), h.lanes...)
+	maxBuffer := h.maxBufferBytes
+	h.mu.RUnlock()
+
+	var total int64
+	for _, l := range lanes {
+		if l.ok.Load() {
+			total += h.laneCreditBytes(l)
+		}
+	}
+	if total == 0 {
+		total = int64(minCreditPerLane)
+	}
+	// maxBufferBytes is an operator safety valve only. Zero means no
+	// artificial throughput ceiling; the flow-control budget then scales
+	// with the measured capacity of every active lane.
+	if maxBuffer > 0 && total > maxBuffer {
+		total = maxBuffer
+	}
+	return total
+}
+
+func (h *hub) chooseLane(excluded map[int]bool) *lane {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	var best *lane
 	var bestScore int64
 	for _, l := range h.lanes {
-		if !l.ok.Load() || l.id == exclude {
+		if !l.ok.Load() || (excluded != nil && excluded[l.id]) {
 			continue
 		}
 		inflight := l.inflight.Load()
 		if inflight < 0 {
 			inflight = 0
 		}
-		rate := l.rateBps.Load()
-		if rate == 0 {
-			rate = 8 * 1024 * 1024 // neutral startup estimate: 8 MiB/s
-		}
-		// Estimated queue drain time. Faster lanes are allowed to carry a
-		// proportionally larger in-flight window instead of forcing every
-		// lane to the same byte backlog.
+		rate := h.laneRate(l)
+		// Estimated drain time is the base score. Going beyond a lane's
+		// dynamic credit is allowed, but penalized rather than hard-capped.
 		score := inflight * 1000000000 / int64(rate)
+		credit := h.laneCreditBytes(l)
+		if inflight > credit {
+			score += (inflight - credit) * 2000000000 / int64(rate)
+		}
 		if best == nil || score < bestScore {
 			best = l
 			bestScore = score
 		}
 	}
-	if best != nil {
-		return best
-	}
-
-	// One-lane fallback, or all other lanes are down.
-	for _, l := range h.lanes {
-		if l.ok.Load() {
-			return l
-		}
-	}
-	return nil
+	return best
 }
 
 func (h *hub) sendControl(f frame) error {
-	l := h.chooseLane(-1)
-	if l == nil {
-		return fmt.Errorf("no active lanes")
+	payload := encodeFrame(f)
+	excluded := make(map[int]bool)
+	for tries := 0; tries < h.activeCount(); tries++ {
+		l := h.chooseLane(excluded)
+		if l == nil {
+			break
+		}
+		if l.enqueueControl(payload) {
+			return nil
+		}
+		excluded[l.id] = true
 	}
-	if !l.enqueue(encodeFrame(f)) {
-		return fmt.Errorf("control lane unavailable")
-	}
-	return nil
+	return fmt.Errorf("control lanes unavailable")
 }
 
 func (h *hub) sendAckOn(l *lane, sid, seq uint64) {
-	if l == nil || !l.ok.Load() {
-		l = h.chooseLane(-1)
-	}
-	if l == nil {
+	payload := encodeFrame(frame{typ: ftAck, sid: sid, seq: seq})
+	if l != nil && l.ok.Load() && l.enqueueControl(payload) {
 		return
 	}
-	_ = l.enqueue(encodeFrame(frame{typ: ftAck, sid: sid, seq: seq}))
+	excluded := make(map[int]bool)
+	if l != nil {
+		excluded[l.id] = true
+	}
+	for tries := 0; tries < h.activeCount(); tries++ {
+		alt := h.chooseLane(excluded)
+		if alt == nil {
+			return
+		}
+		if alt.enqueueControl(payload) {
+			return
+		}
+		excluded[alt.id] = true
+	}
 }
 
 func (h *hub) addStream(sid uint64, c net.Conn) *stream {
@@ -664,6 +788,14 @@ func (h *hub) rateLoop() {
 			delta := now - prev[l.id]
 			prev[l.id] = now
 			if delta == 0 {
+				// Decay only while a lane still has outstanding data. An idle
+				// lane keeps its learned capacity so it can be scheduled again.
+				if l.inflight.Load() > 0 {
+					old := l.rateBps.Load()
+					if old > 0 {
+						l.rateBps.Store(old * 7 / 8)
+					}
+				}
 				continue
 			}
 			sample := delta * 2 // bytes per second over a 500ms sample
@@ -690,29 +822,50 @@ func (h *hub) statsLoop() {
 			continue
 		}
 		parts := make([]string, 0, len(lanes))
-		for _, l := range lanes {
+		var totalTX, totalRX uint64
+		var totalFlight int64
+		var totalRate uint64
+		for i, l := range lanes {
 			tx := l.txBytes.Load()
 			rx := l.rxBytes.Load()
 			dtx := tx - prevTX[l.id]
 			drx := rx - prevRX[l.id]
 			prevTX[l.id] = tx
 			prevRX[l.id] = rx
-			parts = append(parts, fmt.Sprintf(
-				"%s ok=%t tx=%.2fMB/s rx=%.2fMB/s flight=%.1fKB rate=%.2fMB/s",
-				l.name,
-				l.ok.Load(),
-				float64(dtx)/(2*1024*1024),
-				float64(drx)/(2*1024*1024),
-				float64(l.inflight.Load())/1024,
-				float64(l.rateBps.Load())/(1024*1024),
-			))
+			totalTX += dtx
+			totalRX += drx
+			totalFlight += l.inflight.Load()
+			totalRate += l.rateBps.Load()
+			if len(lanes) <= 16 || i < 8 {
+				parts = append(parts, fmt.Sprintf(
+					"%s ok=%t tx=%.2fMB/s rx=%.2fMB/s flight=%.1fKB rate=%.2fMB/s",
+					l.name,
+					l.ok.Load(),
+					float64(dtx)/(2*1024*1024),
+					float64(drx)/(2*1024*1024),
+					float64(l.inflight.Load())/1024,
+					float64(l.rateBps.Load())/(1024*1024),
+				))
+			}
 		}
-		log.Printf("STATS active=%d | %s", h.activeCount(), strings.Join(parts, " | "))
+		if len(lanes) > 16 {
+			parts = append(parts, fmt.Sprintf("... %d more lanes", len(lanes)-8))
+		}
+		log.Printf(
+			"STATS active=%d total_tx=%.2fMB/s total_rx=%.2fMB/s flight=%.1fMB learned=%.2fMB/s budget=%.1fMB | %s",
+			h.activeCount(),
+			float64(totalTX)/(2*1024*1024),
+			float64(totalRX)/(2*1024*1024),
+			float64(totalFlight)/(1024*1024),
+			float64(totalRate)/(1024*1024),
+			float64(h.pendingBudgetBytes())/(1024*1024),
+			strings.Join(parts, " | "),
+		)
 	}
 }
 
-func runClient(listen, domain, path, token string, port int, ips []string) error {
-	h := newHub("")
+func runClient(listen, domain, path, token string, port int, ips []string, creditHorizon time.Duration, maxBufferBytes int64) error {
+	h := newHub("", creditHorizon, maxBufferBytes)
 
 	for _, raw := range ips {
 		ip := strings.TrimSpace(raw)
@@ -779,8 +932,8 @@ func runClient(listen, domain, path, token string, port int, ips []string) error
 	}
 }
 
-func runServer(listen, path, token, target, cert, key string) error {
-	h := newHub(target)
+func runServer(listen, path, token, target, cert, key string, creditHorizon time.Duration, maxBufferBytes int64) error {
+	h := newHub(target, creditHorizon, maxBufferBytes)
 	up := websocket.Upgrader{
 		CheckOrigin:     func(*http.Request) bool { return true },
 		ReadBufferSize:  64 * 1024,
@@ -848,7 +1001,12 @@ func main() {
 	cert := flag.String("cert", "", "TLS fullchain")
 	key := flag.String("key", "", "TLS private key")
 	benchBytes := flag.Int64("bench-bytes", 1<<30, "bench response bytes")
+	creditMS := flag.Int("credit-ms", 500, "dynamic per-lane credit horizon in milliseconds")
+	maxBufferMB := flag.Int64("max-buffer-mb", 0, "optional global pending-data safety ceiling in MiB; 0 disables the artificial ceiling")
 	flag.Parse()
+
+	creditHorizon := time.Duration(*creditMS) * time.Millisecond
+	maxBufferBytes := *maxBufferMB * 1024 * 1024
 
 	var err error
 	switch *mode {
@@ -856,12 +1014,12 @@ func main() {
 		if *domain == "" || *ips == "" {
 			log.Fatal("client requires -domain and -ips")
 		}
-		err = runClient(*listen, *domain, *path, *token, *port, strings.Split(*ips, ","))
+		err = runClient(*listen, *domain, *path, *token, *port, strings.Split(*ips, ","), creditHorizon, maxBufferBytes)
 	case "server":
 		if *cert == "" || *key == "" {
 			log.Fatal("server requires -cert and -key")
 		}
-		err = runServer(*listen, *path, *token, *target, *cert, *key)
+		err = runServer(*listen, *path, *token, *target, *cert, *key, creditHorizon, maxBufferBytes)
 	case "bench":
 		err = runBench(*listen, *benchBytes)
 	default:
