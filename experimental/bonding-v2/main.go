@@ -24,13 +24,16 @@ const (
 	ftData  byte = 2
 	ftAck   byte = 3
 	ftClose byte = 4
+	ftGap   byte = 5
 
 	headerSize        = 17
 	chunkSize         = 32 * 1024
 	pendingPerLane    = 256  // 8 MiB application window per active lane
-	maxPendingCap     = 4096 // cap one stream at 128 MiB even with many lanes
+	maxPendingCap     = 1024 // 32 MiB global ceiling: enough BDP without huge reorder lead
 	laneQueueDepth    = 1024
 	defaultRTO        = 500 * time.Millisecond
+	gapRescueDelay    = 100 * time.Millisecond
+	gapRescueRepeat   = 150 * time.Millisecond
 
 	// Phase-1 aggregation deliberately relies on the reliability of each
 	// WebSocket/TCP lane.  Speculative retransmission is disabled until the
@@ -195,7 +198,7 @@ func (s *sender) transmit(pkt *pendingPacket, exclude int) error {
 	return nil
 }
 
-func (s *sender) ack(seq uint64) {
+func (s *sender) ack(seq uint64, ackLane int) {
 	s.mu.Lock()
 	pkt := s.pending[seq]
 	if pkt == nil {
@@ -208,12 +211,31 @@ func (s *sender) ack(seq uint64) {
 	s.cond.Broadcast()
 	s.mu.Unlock()
 
+	// Clear accounting for every copy that was put in flight, but credit
+	// throughput only to the lane that returned the path-affine ACK.
 	for laneID, count := range attempts {
 		if l := s.h.laneByID(laneID); l != nil {
 			l.inflight.Add(-n * int64(count))
-			l.ackedBytes.Add(uint64(n) * uint64(count))
 		}
 	}
+	if l := s.h.laneByID(ackLane); l != nil {
+		l.ackedBytes.Add(uint64(n))
+	}
+}
+
+func (s *sender) reinject(seq uint64) {
+	s.mu.Lock()
+	pkt := s.pending[seq]
+	if pkt == nil {
+		s.mu.Unlock()
+		return
+	}
+	exclude := pkt.lastLane
+	s.mu.Unlock()
+
+	// Receiver reported a real sequence hole. Reinject only that missing
+	// chunk on another lane instead of timer-blasting healthy queued data.
+	_ = s.transmit(pkt, exclude)
 }
 
 func (s *sender) retransmitLoop() {
@@ -260,10 +282,52 @@ type receiver struct {
 	finSet bool
 	fin    uint64
 	onFin  func()
+	onGap  func(uint64)
+
+	gapSeq   uint64
+	gapArmed bool
+	gapGen   uint64
 }
 
-func newReceiver(w io.Writer, onFin func()) *receiver {
-	return &receiver{buf: make(map[uint64][]byte), w: w, onFin: onFin}
+func newReceiver(w io.Writer, onFin func(), onGap func(uint64)) *receiver {
+	return &receiver{buf: make(map[uint64][]byte), w: w, onFin: onFin, onGap: onGap}
+}
+
+func (r *receiver) updateGapLocked() {
+	if len(r.buf) == 0 || r.onGap == nil {
+		if r.gapArmed {
+			r.gapArmed = false
+			r.gapGen++
+		}
+		return
+	}
+
+	missing := r.next
+	if r.gapArmed && r.gapSeq == missing {
+		return
+	}
+
+	r.gapSeq = missing
+	r.gapArmed = true
+	r.gapGen++
+	gen := r.gapGen
+	go r.watchGap(missing, gen)
+}
+
+func (r *receiver) watchGap(seq, gen uint64) {
+	time.Sleep(gapRescueDelay)
+	for {
+		r.mu.Lock()
+		if !r.gapArmed || r.gapSeq != seq || r.gapGen != gen || r.next != seq || len(r.buf) == 0 || r.onGap == nil {
+			r.mu.Unlock()
+			return
+		}
+		fn := r.onGap
+		r.mu.Unlock()
+
+		fn(seq)
+		time.Sleep(gapRescueRepeat)
+	}
 }
 
 func (r *receiver) put(seq uint64, p []byte) error {
@@ -287,6 +351,7 @@ func (r *receiver) put(seq uint64, p []byte) error {
 		delete(r.buf, r.next)
 		r.next++
 	}
+	r.updateGapLocked()
 	done := r.finSet && r.next >= r.fin && r.onFin != nil
 	var fn func()
 	if done {
@@ -457,7 +522,11 @@ func (h *hub) sendAckOn(l *lane, sid, seq uint64) {
 func (h *hub) addStream(sid uint64, c net.Conn) *stream {
 	st := &stream{conn: c}
 	st.send = newSender(h, sid)
-	st.recv = newReceiver(c, func() { closeWrite(c) })
+	st.recv = newReceiver(
+		c,
+		func() { closeWrite(c) },
+		func(seq uint64) { _ = h.sendControl(frame{typ: ftGap, sid: sid, seq: seq}) },
+	)
 	h.mu.Lock()
 	h.streams[sid] = st
 	h.mu.Unlock()
@@ -485,7 +554,11 @@ func (h *hub) ensureServerStream(sid uint64) *stream {
 	}
 	candidate := &stream{conn: c}
 	candidate.send = newSender(h, sid)
-	candidate.recv = newReceiver(c, func() { closeWrite(c) })
+	candidate.recv = newReceiver(
+		c,
+		func() { closeWrite(c) },
+		func(seq uint64) { _ = h.sendControl(frame{typ: ftGap, sid: sid, seq: seq}) },
+	)
 
 	h.mu.Lock()
 	if old := h.streams[sid]; old != nil {
@@ -522,7 +595,11 @@ func (h *hub) handleFrame(src *lane, f frame) {
 		}
 	case ftAck:
 		if st := h.getStream(f.sid); st != nil {
-			st.send.ack(f.seq)
+			st.send.ack(f.seq, src.id)
+		}
+	case ftGap:
+		if st := h.getStream(f.sid); st != nil {
+			st.send.reinject(f.seq)
 		}
 	case ftClose:
 		if st := h.getStream(f.sid); st != nil {
