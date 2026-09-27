@@ -27,7 +27,7 @@ const (
 
 	headerSize     = 17
 	chunkSize      = 32 * 1024
-	maxPending     = 512 // 16 MiB per logical stream
+	maxPending     = 256 // 8 MiB phase-1 window; reduce cross-lane head-of-line depth
 	laneQueueDepth = 1024
 	defaultRTO     = 500 * time.Millisecond
 
@@ -78,10 +78,12 @@ type lane struct {
 	c    *websocket.Conn
 	q    chan txItem
 
-	ok       atomic.Bool
-	inflight atomic.Int64
-	txBytes  atomic.Uint64
-	rxBytes  atomic.Uint64
+	ok         atomic.Bool
+	inflight   atomic.Int64
+	txBytes    atomic.Uint64
+	rxBytes    atomic.Uint64
+	ackedBytes atomic.Uint64
+	rateBps    atomic.Uint64
 }
 
 func (l *lane) enqueue(b []byte) bool {
@@ -196,6 +198,7 @@ func (s *sender) ack(seq uint64) {
 	for laneID, count := range attempts {
 		if l := s.h.laneByID(laneID); l != nil {
 			l.inflight.Add(-n * int64(count))
+			l.ackedBytes.Add(uint64(n) * uint64(count))
 		}
 	}
 }
@@ -326,6 +329,7 @@ type hub struct {
 func newHub(target string) *hub {
 	h := &hub{streams: make(map[uint64]*stream), target: target}
 	go h.statsLoop()
+	go h.rateLoop()
 	return h
 }
 
@@ -374,7 +378,18 @@ func (h *hub) chooseLane(exclude int) *lane {
 		if !l.ok.Load() || l.id == exclude {
 			continue
 		}
-		score := l.inflight.Load()
+		inflight := l.inflight.Load()
+		if inflight < 0 {
+			inflight = 0
+		}
+		rate := l.rateBps.Load()
+		if rate == 0 {
+			rate = 8 * 1024 * 1024 // neutral startup estimate: 8 MiB/s
+		}
+		// Estimated queue drain time. Faster lanes are allowed to carry a
+		// proportionally larger in-flight window instead of forcing every
+		// lane to the same byte backlog.
+		score := inflight * 1000000000 / int64(rate)
 		if best == nil || score < bestScore {
 			best = l
 			bestScore = score
@@ -404,8 +419,10 @@ func (h *hub) sendControl(f frame) error {
 	return nil
 }
 
-func (h *hub) sendAck(sid, seq uint64) {
-	l := h.chooseLane(-1)
+func (h *hub) sendAckOn(l *lane, sid, seq uint64) {
+	if l == nil || !l.ok.Load() {
+		l = h.chooseLane(-1)
+	}
 	if l == nil {
 		return
 	}
@@ -459,7 +476,7 @@ func (h *hub) ensureServerStream(sid uint64) *stream {
 	return candidate
 }
 
-func (h *hub) handleFrame(f frame) {
+func (h *hub) handleFrame(src *lane, f frame) {
 	switch f.typ {
 	case ftOpen:
 		if h.target != "" {
@@ -474,7 +491,7 @@ func (h *hub) handleFrame(f frame) {
 			return
 		}
 		// ACK as soon as this endpoint owns a copy; delivery can still wait for order.
-		h.sendAck(f.sid, f.seq)
+		h.sendAckOn(src, f.sid, f.seq)
 		if err := st.recv.put(f.seq, f.p); err != nil {
 			log.Printf("STREAM %d receiver write failed: %v", f.sid, err)
 		}
@@ -505,7 +522,7 @@ func (h *hub) readLane(l *lane) {
 		if err != nil {
 			continue
 		}
-		h.handleFrame(f)
+		h.handleFrame(l, f)
 	}
 }
 
@@ -532,6 +549,32 @@ func (h *hub) pumpConnToTunnel(sid uint64, st *stream) {
 	}
 }
 
+func (h *hub) rateLoop() {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	prev := make(map[int]uint64)
+	for range t.C {
+		h.mu.RLock()
+		lanes := append([]*lane(nil), h.lanes...)
+		h.mu.RUnlock()
+		for _, l := range lanes {
+			now := l.ackedBytes.Load()
+			delta := now - prev[l.id]
+			prev[l.id] = now
+			if delta == 0 {
+				continue
+			}
+			sample := delta * 2 // bytes per second over a 500ms sample
+			old := l.rateBps.Load()
+			if old == 0 {
+				l.rateBps.Store(sample)
+			} else {
+				l.rateBps.Store((old*3 + sample) / 4)
+			}
+		}
+	}
+}
+
 func (h *hub) statsLoop() {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
@@ -553,12 +596,13 @@ func (h *hub) statsLoop() {
 			prevTX[l.id] = tx
 			prevRX[l.id] = rx
 			parts = append(parts, fmt.Sprintf(
-				"%s ok=%t tx=%.2fMB/s rx=%.2fMB/s flight=%.1fKB",
+				"%s ok=%t tx=%.2fMB/s rx=%.2fMB/s flight=%.1fKB rate=%.2fMB/s",
 				l.name,
 				l.ok.Load(),
 				float64(dtx)/(2*1024*1024),
 				float64(drx)/(2*1024*1024),
 				float64(l.inflight.Load())/1024,
+				float64(l.rateBps.Load())/(1024*1024),
 			))
 		}
 		log.Printf("STATS active=%d | %s", h.activeCount(), strings.Join(parts, " | "))
