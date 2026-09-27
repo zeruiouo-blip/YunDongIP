@@ -25,11 +25,12 @@ const (
 	ftAck   byte = 3
 	ftClose byte = 4
 
-	headerSize     = 17
-	chunkSize      = 32 * 1024
-	maxPending     = 256 // 8 MiB phase-1 window; reduce cross-lane head-of-line depth
-	laneQueueDepth = 1024
-	defaultRTO     = 500 * time.Millisecond
+	headerSize        = 17
+	chunkSize         = 32 * 1024
+	pendingPerLane    = 256  // 8 MiB application window per active lane
+	maxPendingCap     = 4096 // cap one stream at 128 MiB even with many lanes
+	laneQueueDepth    = 1024
+	defaultRTO        = 500 * time.Millisecond
 
 	// Phase-1 aggregation deliberately relies on the reliability of each
 	// WebSocket/TCP lane.  Speculative retransmission is disabled until the
@@ -137,9 +138,21 @@ func newSender(h *hub, sid uint64) *sender {
 	return s
 }
 
+func (s *sender) pendingLimit() int {
+	n := s.h.activeCount()
+	if n < 1 {
+		n = 1
+	}
+	limit := pendingPerLane * n
+	if limit > maxPendingCap {
+		limit = maxPendingCap
+	}
+	return limit
+}
+
 func (s *sender) sendData(p []byte) error {
 	s.mu.Lock()
-	for len(s.pending) >= maxPending {
+	for len(s.pending) >= s.pendingLimit() {
 		s.cond.Wait()
 	}
 	seq := s.nextSeq
