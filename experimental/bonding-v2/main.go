@@ -27,14 +27,14 @@ const (
 	ftGap   byte = 5
 
 	headerSize            = 17
-	chunkSize             = 256 * 1024
-	laneDataQueueDepth    = 16
+	chunkSize             = 64 * 1024
+	laneDataQueueDepth    = 32
 	laneControlQueueDepth = 1024
 	receiverWriteBatchMax = 16
 	startupRateBps        = 8 * 1024 * 1024
-	startupCreditPerLane  = 6 * 1024 * 1024
-	minCreditPerLane      = 256 * 1024
-	defaultCreditHorizon  = 1500 * time.Millisecond
+	startupCreditPerLane  = 512 * 1024
+	minCreditPerLane      = 128 * 1024
+	defaultCreditHorizon  = 500 * time.Millisecond
 	defaultRTO            = 500 * time.Millisecond
 	gapRescueDelay        = 80 * time.Millisecond
 	gapRescueRepeat       = 100 * time.Millisecond
@@ -684,15 +684,19 @@ func (h *hub) chooseLane(excluded map[int]bool, enforceCredit bool) *lane {
 		}
 		rate := h.laneRate(l)
 		credit := h.laneCreditBytes(l)
-		// A lane may contribute as much throughput as it can actually prove,
-		// but it may not accumulate an arbitrarily deep private backlog.
-		// This prevents a suddenly slow lane from holding megabytes of early
-		// sequence numbers hostage while faster lanes race ahead.
 		if enforceCredit && inflight+int64(chunkSize) > credit {
 			continue
 		}
-		// Estimated drain time keeps faster lanes proportionally busier.
-		score := inflight * 1000000000 / int64(rate)
+
+		// Earliest-delivery scheduling: score the finish time *after* placing
+		// the next chunk, not merely the drain time of what is already queued.
+		// The old inflight/rate score gave every empty lane a score of zero,
+		// so even a 0.5 MB/s lane repeatedly won a new sequence chunk and then
+		// became a head-of-line blocker.  With (inflight+chunk)/rate, a slow
+		// lane is used only when it can finish the next chunk competitively.
+		// Fast lanes therefore absorb most traffic automatically while slow
+		// lanes fade down instead of being hard-disabled.
+		score := (inflight + int64(chunkSize)) * 1000000000 / int64(rate)
 		if best == nil || score < bestScore {
 			best = l
 			bestScore = score
@@ -923,11 +927,10 @@ func (h *hub) rateLoop() {
 			sample := delta * 2 // bytes per second over a 500ms sample
 			old := l.rateBps.Load()
 			if old == 0 {
-				seed := sample
-				if seed < startupRateBps {
-					seed = startupRateBps
-				}
-				l.rateBps.Store(seed)
+				// First real ACK sample becomes the lane's real rate immediately.
+				// Do not promote a weak lane to the startup rate: that kept slow
+				// lanes artificially competitive for several sampling periods.
+				l.rateBps.Store(sample)
 			} else {
 				l.rateBps.Store((old*3 + sample) / 4)
 			}
@@ -1127,7 +1130,7 @@ func main() {
 	cert := flag.String("cert", "", "TLS fullchain")
 	key := flag.String("key", "", "TLS private key")
 	benchBytes := flag.Int64("bench-bytes", 1<<30, "bench response bytes")
-	creditMS := flag.Int("credit-ms", 1500, "dynamic per-lane credit horizon in milliseconds")
+	creditMS := flag.Int("credit-ms", 500, "dynamic per-lane credit horizon in milliseconds")
 	maxBufferMB := flag.Int64("max-buffer-mb", 0, "optional global pending-data safety ceiling in MiB; 0 disables the artificial ceiling")
 	flag.Parse()
 
