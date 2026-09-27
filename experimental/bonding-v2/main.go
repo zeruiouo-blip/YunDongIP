@@ -224,7 +224,7 @@ func (s *sender) transmit(pkt *pendingPacket, exclude int) error {
 		}
 
 		for tries := 0; tries < active; tries++ {
-			l := s.h.chooseLane(excluded)
+			l := s.h.chooseLane(excluded, true)
 			if l == nil {
 				break
 			}
@@ -615,7 +615,7 @@ func (h *hub) pendingBudgetBytes() int64 {
 	return total
 }
 
-func (h *hub) chooseLane(excluded map[int]bool) *lane {
+func (h *hub) chooseLane(excluded map[int]bool, enforceCredit bool) *lane {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -635,7 +635,7 @@ func (h *hub) chooseLane(excluded map[int]bool) *lane {
 		// but it may not accumulate an arbitrarily deep private backlog.
 		// This prevents a suddenly slow lane from holding megabytes of early
 		// sequence numbers hostage while faster lanes race ahead.
-		if inflight+int64(chunkSize) > credit {
+		if enforceCredit && inflight+int64(chunkSize) > credit {
 			continue
 		}
 		// Estimated drain time keeps faster lanes proportionally busier.
@@ -652,7 +652,7 @@ func (h *hub) sendControl(f frame) error {
 	payload := encodeFrame(f)
 	excluded := make(map[int]bool)
 	for tries := 0; tries < h.activeCount(); tries++ {
-		l := h.chooseLane(excluded)
+		l := h.chooseLane(excluded, false)
 		if l == nil {
 			break
 		}
@@ -698,7 +698,7 @@ func (h *hub) sendAckOn(l *lane, sid, seq uint64) {
 		excluded[l.id] = true
 	}
 	for tries := 0; tries < h.activeCount(); tries++ {
-		alt := h.chooseLane(excluded)
+		alt := h.chooseLane(excluded, false)
 		if alt == nil {
 			return
 		}
